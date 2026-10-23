@@ -16,6 +16,8 @@ if(NOT DEFINED PLUGIN_BUILD_NUMBER)
     file(READ "${_BUILD_NUMBER_CACHE}" PLUGIN_BUILD_NUMBER)
     math(EXPR PLUGIN_BUILD_NUMBER "${PLUGIN_BUILD_NUMBER}+1")
   else()
+    # A fresh local checkout needs a valid bundle version too.
+    set(PLUGIN_BUILD_NUMBER "1")
     if("$ENV{CI}")
       if("$ENV{GITHUB_RUN_ID}")
         set(PLUGIN_BUILD_NUMBER "$ENV{GITHUB_RUN_ID}")

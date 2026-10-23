@@ -85,6 +85,16 @@ cmake --build build --config Release
 
 ### macOS
 
+Initialize the mDNS submodule before configuring a fresh checkout. For the universal build:
+
+```bash
+git submodule update --init --recursive
+cmake --preset macos
+cmake --build --preset macos
+```
+
+To select the native SSP connector explicitly:
+
 ```bash
 cmake -B build -S . -DUSE_NATIVE_SSP=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build
