@@ -123,13 +123,16 @@ void CameraStatus::doRefresh(StatusUpdateCallback cb)
 					current_encoder = rsp->currentValue;
 					encoders.clear();
 					for (const auto &choice : rsp->choices)
-						if (choice == "H.264" || choice == "H.265")
-							encoders.append(choice);
+						encoders.append(choice);
 					controller->getCameraConfig(CONFIG_KEY_MOVIE_FORMAT, [=](HttpResponse *rsp) {
 						movie_formats = rsp->statusCode == 200 && rsp->code == 0
 									? QStringList(rsp->choices)
 									: QStringList();
-						getCurrentStream(cb);
+						getCurrentStream([=](bool ok) {
+							if (!ok)
+								return cb(false);
+							readImaging(cb);
+						});
 					});
 				});
 			});
@@ -163,14 +166,85 @@ void CameraStatus::applyConfig(QString key, QString value, StatusReasonUpdateCal
 	controller->getCameraConfig(key, [=](HttpResponse *rsp) {
 		if (rsp->statusCode != 200 || rsp->code != 0)
 			return cb(false, QString("Could not read %1").arg(key));
-		if (rsp->currentValue == value)
+		CameraConfigInfo info = {};
+		info.type = rsp->type;
+		info.readOnly = rsp->readOnly;
+		info.currentValue = rsp->currentValue;
+		info.intValue = rsp->intValue;
+		info.min = rsp->min;
+		info.max = rsp->max;
+		info.step = rsp->step;
+		info.choices = rsp->choices;
+		if (value == ssp_camera_control_value(info))
 			return cb(true, {});
-		if (rsp->readOnly || (!rsp->choices.isEmpty() && !rsp->choices.contains(value)))
-			return cb(false, QString("Camera does not support %1 = %2").arg(key, value));
+		if (!ssp_camera_control_valid(info, value))
+			return cb(false, QString("Camera rejects %1 = %2 (read-only or unsupported)").arg(key, value));
 		controller->setCameraConfig(key, value, [=](HttpResponse *rsp) {
+			cb(rsp->statusCode == 200 && rsp->code == 0, QString("Camera setting %1").arg(key));
+		});
+	});
+}
+
+void CameraStatus::readImaging(StatusUpdateCallback cb)
+{
+	imaging.clear();
+	readImagingAt(0, cb);
+}
+void CameraStatus::readImagingAt(size_t index, StatusUpdateCallback cb)
+{
+	if (index >= ssp_camera_controls().size())
+		return cb(true);
+	QString key = ssp_camera_controls()[index].key;
+	controller->getCameraConfig(key, [=](HttpResponse *rsp) {
+		if (rsp->statusCode == 200 && rsp->code == 0) {
+			CameraConfigInfo info = {};
+			info.type = rsp->type;
+			info.readOnly = rsp->readOnly;
+			info.currentValue = rsp->currentValue;
+			info.intValue = rsp->intValue;
+			info.min = rsp->min;
+			info.max = rsp->max;
+			info.step = rsp->step;
+			info.choices = rsp->choices;
+			imaging.insert(key, info);
+		}
+		readImagingAt(index + 1, cb);
+	});
+}
+void CameraStatus::applyImaging(QMap<QString, QString> desired, StatusReasonUpdateCallback cb)
+{
+	applyImagingAt(0, desired, cb);
+}
+void CameraStatus::applyImagingAt(size_t index, QMap<QString, QString> desired, StatusReasonUpdateCallback cb)
+{
+	if (index >= ssp_camera_controls().size())
+		return cb(true, "Camera imaging settings applied");
+	QString key = ssp_camera_controls()[index].key;
+	if (!desired.contains(key))
+		return applyImagingAt(index + 1, desired, cb);
+	applyConfig(key, desired.value(key), [=](bool ok, QString reason) {
+		if (!ok)
+			return cb(false, reason);
+		applyImagingAt(index + 1, desired, cb);
+	});
+}
+void CameraStatus::setBitDepth(int stream_index, QString value, StatusReasonUpdateCallback cb)
+{
+	if (value != "8bit" && value != "10bit")
+		return cb(false, "Unsupported H.265 bit depth");
+	auto index = QString("stream%1").arg(stream_index);
+	controller->getStreamInfo(index, [=](HttpResponse *rsp) {
+		if (rsp->statusCode != 200 || rsp->code != 0)
+			return cb(false, "Could not read H.265 bit depth");
+		if (rsp->streamInfo.bitWidth_ == value)
+			return cb(true, {});
+		controller->setStreamBitwidth(index, value, [=](HttpResponse *rsp) {
 			if (rsp->statusCode != 200 || rsp->code != 0)
-				return cb(false, QString("Could not set %1 = %2").arg(key, value));
-			cb(true, {});
+				return cb(false, "Camera rejected H.265 bit depth");
+			controller->getStreamInfo(index, [=](HttpResponse *rsp) {
+				cb(rsp->statusCode == 200 && rsp->code == 0 && rsp->streamInfo.bitWidth_ == value,
+				   "H.265 bit depth readback");
+			});
 		});
 	});
 }

@@ -39,7 +39,9 @@
 #include <QTcpSocket>
 
 #include <stdio.h>
+#include <memory>
 #include "cameracontroller.h"
+#include "../camera-control-model.h"
 
 CameraController::CameraController(QObject *parent)
 	: QObject(parent),
@@ -53,6 +55,7 @@ CameraController::CameraController(QObject *parent)
 
 CameraController::~CameraController()
 {
+	cancelAllReqs();
 	disconnect(this);
 	while (!httpRequestQueue_->isEmpty()) {
 		delete httpRequestQueue_->dequeue();
@@ -66,6 +69,8 @@ CameraController::~CameraController()
 
 void CameraController::setIp(const QString &ip)
 {
+	if (ip_ == ip)
+		return;
 	cancelAllReqs();
 	ip_ = ip;
 }
@@ -77,6 +82,13 @@ void CameraController::clearConnectionStatus()
 
 void CameraController::cancelAllReqs()
 {
+	const auto replies = activeReplies_;
+	activeReplies_.clear();
+	for (auto *reply : replies) {
+		QObject::disconnect(reply, nullptr, this, nullptr);
+		reply->abort();
+		reply->deleteLater();
+	}
 	while (!httpRequestQueue_->isEmpty()) {
 		delete httpRequestQueue_->dequeue();
 	}
@@ -168,10 +180,7 @@ void CameraController::requestForCode(const QString &shortPath, int timeout, OnR
 }
 void CameraController::setCameraConfig(const QString &key, const QString &value, OnRequestCallback callback)
 {
-	QString shortPath;
-	// /ctrl/stream_setting?index=stream1&width=1920&height=1080
-	shortPath.append(URL_CTRL_SET).append("?").append(key).append("=").append(value);
-	requestForCode(shortPath, callback);
+	requestForCode(ssp_camera_config_path(key, value), callback);
 }
 
 void CameraController::setSendStream(const QString &value, OnRequestCallback callback)
@@ -275,14 +284,19 @@ void CameraController::nextRequest(HttpRequest *req)
 	QString path = buildRequestPath(req->shortPath, req->fullPath, req->useShortPath);
 
 	QUrl url(path);
-	qDebug() << url;
+
 	QNetworkRequest request;
 	request.setRawHeader("Connection", "Keep-Alive");
 	request.setUrl(url);
 
+	auto owned = std::shared_ptr<HttpRequest>(req);
 	auto reply_ = networkManager_->get(request);
+	activeReplies_.insert(reply_);
 	QTimer::singleShot(req->timeout, reply_, SLOT(abort()));
-	connect(reply_, &QNetworkReply::finished, this, [=]() { handleRequestResult(req, reply_); });
+	connect(reply_, &QNetworkReply::finished, this, [=]() {
+		activeReplies_.remove(reply_);
+		handleRequestResult(owned.get(), reply_);
+	});
 }
 
 void CameraController::nextRequest()
@@ -341,11 +355,8 @@ void CameraController::handleRequestResult(HttpRequest *req, QNetworkReply *repl
 
 	if (req->callback != NULL) {
 		req->callback(rsp);
-	} else {
-		delete rsp;
 	}
-
-	delete req;
+	delete rsp;
 }
 
 void CameraController::handleReqeustResult()
@@ -354,13 +365,14 @@ void CameraController::handleReqeustResult()
 	if (httpRequestQueue_->size() > 0) {
 		struct HttpRequest *req = httpRequestQueue_->dequeue();
 		handleRequestResult(req, reply_);
+		delete req;
 	}
 	nextRequest();
 }
 
 void CameraController::parseResponse(const QByteArray &byteData, struct HttpResponse *rsp, RequestType reqType)
 {
-	qDebug() << byteData;
+
 	QJsonDocument doc(QJsonDocument::fromJson(byteData));
 	if (!doc.isNull() && doc.isObject()) {
 		if (reqType == REQUEST_TYPE_CONFIG) {

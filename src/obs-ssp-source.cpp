@@ -41,6 +41,9 @@ along with this program; If not, see <https://www.gnu.org/licenses/>
 
 #include "ssp-controller.h"
 #include "ssp-settings.h"
+#include "ssp-video-codec.h"
+#include "ssp-source-lifetime.h"
+#include <QUuid>
 #include "ssp-client-iso.h"
 #include "VFrameQueue.h"
 
@@ -80,6 +83,9 @@ extern "C" {
 #define PROP_ENCODER "ssp_encoding"
 #define PROP_CAMERA_BITRATE "ssp_camera_bitrate_kbps"
 #define PROP_CAMERA_STATUS "ssp_camera_status"
+#define PROP_BIT_DEPTH "ssp_camera_bit_depth"
+#define PROP_LUT_PATH "ssp_obs_lut_path"
+#define PROP_LUT_ENABLED "ssp_obs_lut_enabled"
 
 #define SSP_IP_DIRECT "10.98.32.1"
 #define SSP_IP_WIFI "10.98.33.1"
@@ -88,6 +94,7 @@ extern "C" {
 using namespace std::placeholders;
 
 struct ssp_source;
+using SourceLife = std::shared_ptr<SspSourceLifetime<ssp_source>>;
 
 struct ssp_connection {
 	SSPClientIso *client;
@@ -95,6 +102,8 @@ struct ssp_connection {
 	uint32_t width;
 	uint32_t height;
 	AVCodecID vformat;
+	uint32_t video_encoder;
+	bool unsupported_video_logged;
 	obs_source_frame2 frame;
 
 	ffmpeg_decode adecoder;
@@ -136,6 +145,9 @@ struct ssp_source {
 	bool do_check;
 	bool no_check;
 	bool ip_checked;
+	bool paused;
+	bool initializing;
+	SourceLife *lifetime;
 
 	const char *source_ip;
 	ssp_connection *conn;
@@ -164,14 +176,24 @@ static void ssp_on_video_data(struct imf::SspH264Data *video, ssp_connection *s)
 		return;
 	}
 	if (!ffmpeg_decode_valid(&s->vdecoder)) {
-		assert(s->vformat == AV_CODEC_ID_H264 || s->vformat == AV_CODEC_ID_HEVC);
-		if (ffmpeg_decode_init(&s->vdecoder, s->vformat, s->hwaccel) < 0) {
+		s->vformat = ssp_detect_video_codec(s->video_encoder, video->data, video->len);
+		if (s->vformat == AV_CODEC_ID_NONE) {
+			if (!s->unsupported_video_logged) {
+				ssp_blog(
+					LOG_ERROR,
+					"Unsupported SSP video encoder %u; a verified decoder/framing path is required",
+					s->video_encoder);
+				s->unsupported_video_logged = true;
+			}
+			return;
+		}
+		if (ffmpeg_decode_init(&s->vdecoder, s->vformat, s->hwaccel && s->vformat != AV_CODEC_ID_PRORES) < 0) {
 			ssp_blog(LOG_WARNING, "Could not initialize video decoder");
 			return;
 		}
 	}
 	if (s->wait_i_frame && !s->i_frame_shown) {
-		if (video->type == 5) {
+		if (video->type == 5 || s->vformat == AV_CODEC_ID_PRORES) {
 			s->i_frame_shown = true;
 		} else {
 			return;
@@ -262,7 +284,8 @@ static void ssp_on_meta_data(struct imf::SspVideoMeta *v, struct imf::SspAudioMe
 		a->unit, a->timescale, a->encoder, a->bitrate, a->channel, a->sample_rate, a->sample_size);
 	ssp_blog(LOG_INFO, "ssp i meta: pts_is_wall_clock: %u, tc_drop_frame:%u, timecode:%u,", m->pts_is_wall_clock,
 		 m->tc_drop_frame, m->timecode);
-	s->vformat = v->encoder == VIDEO_ENCODER_H264 ? AV_CODEC_ID_H264 : AV_CODEC_ID_H265;
+	s->video_encoder = v->encoder;
+	s->vformat = ssp_detect_video_codec(v->encoder, NULL, 0);
 	s->frame.width = v->width;
 	s->frame.height = v->height;
 	s->sample_size = a->sample_size;
@@ -293,6 +316,8 @@ static void ssp_on_exception(int code, const char *description, ssp_connection *
 
 static void ssp_start(ssp_source *s)
 {
+	if (s->paused || s->conn)
+		return;
 	auto conn = (ssp_connection *)bzalloc(sizeof(ssp_connection));
 	conn->source = s->source;
 	conn->source_ip = strdup(s->source_ip);
@@ -460,9 +485,9 @@ const char *ssp_source_getname(void *data)
 	return obs_module_text("SSPPlugin.SSPSourceName");
 }
 
-static void read_camera_settings(ssp_source *s)
+static void read_camera_settings(ssp_source *s, QString status = {})
 {
-	s->cameraStatus->refreshAll([=](bool ok) {
+	s->cameraStatus->refreshAll(ssp_with_source(*s->lifetime, [status](ssp_source *s, bool ok) mutable {
 		obs_data_t *settings = obs_source_get_settings(s->source);
 		if (ok) {
 			obs_data_set_string(settings, PROP_RESOLUTION,
@@ -476,13 +501,28 @@ static void read_camera_settings(ssp_source *s)
 			obs_data_set_int(settings, PROP_STREAM_INDEX,
 					 s->cameraStatus->current_stream == "Stream1" ? 1 : 0);
 			obs_data_set_int(settings, PROP_CAMERA_BITRATE, s->cameraStatus->current_streamInfo.bitrate_);
+			obs_data_set_string(settings, PROP_BIT_DEPTH,
+					    s->cameraStatus->current_streamInfo.bitWidth_.toUtf8().constData());
+			for (const auto &definition : ssp_camera_controls()) {
+				auto it = s->cameraStatus->imaging.constFind(definition.key);
+				if (it == s->cameraStatus->imaging.cend())
+					continue;
+				QByteArray property = (QString("ssp_control_") + definition.key).toUtf8();
+				if (it->type == CONFIG_TYPE_RANGE)
+					obs_data_set_int(settings, property.constData(), it->intValue);
+				else
+					obs_data_set_string(settings, property.constData(),
+							    it->currentValue.toUtf8().constData());
+			}
 		}
-		obs_data_set_string(settings, PROP_CAMERA_STATUS,
-				    ok ? "Camera settings read; playback never changes camera settings automatically."
-				       : "Camera controls unavailable; SSP playback can still connect.");
+		if (status.isEmpty())
+			status =
+				ok ? "Camera settings read. Apply is explicit; read-only controls follow the camera. Pause streaming to unlock format controls."
+				   : "Camera controls unavailable; SSP playback can still connect.";
+		obs_data_set_string(settings, PROP_CAMERA_STATUS, status.toUtf8().constData());
 		obs_data_release(settings);
 		obs_source_update_properties(s->source);
-	});
+	}));
 }
 
 static bool read_camera_callback(obs_properties_t *, obs_property_t *, void *data)
@@ -491,30 +531,162 @@ static bool read_camera_callback(obs_properties_t *, obs_property_t *, void *dat
 	return false;
 }
 
+static bool pause_camera_callback(obs_properties_t *, obs_property_t *, void *data)
+{
+	auto s = static_cast<ssp_source *>(data);
+	s->paused = true;
+	ssp_stop(s);
+	read_camera_settings(s,
+			     "SSP playback paused. Camera controls show current availability; Apply resumes playback.");
+	return false;
+}
+static bool resume_camera_callback(obs_properties_t *, obs_property_t *, void *data)
+{
+	auto s = static_cast<ssp_source *>(data);
+	s->paused = false;
+	ssp_start(s);
+	read_camera_settings(s);
+	return false;
+}
+static bool autofocus_camera_callback(obs_properties_t *, obs_property_t *, void *data)
+{
+	auto s = static_cast<ssp_source *>(data);
+	s->cameraStatus->getController()->requestForCode(
+		"/ctrl/af", ssp_with_source(*s->lifetime, [](ssp_source *s, HttpResponse *rsp) {
+			auto settings = obs_source_get_settings(s->source);
+			obs_data_set_string(settings, PROP_CAMERA_STATUS,
+					    rsp->statusCode == 200 && rsp->code == 0
+						    ? "Autofocus requested"
+						    : "Camera rejected autofocus; check lens AF mode");
+			obs_data_release(settings);
+			obs_source_update_properties(s->source);
+		}));
+	return false;
+}
+
 static bool apply_camera_callback(obs_properties_t *, obs_property_t *, void *data)
 {
 	auto s = static_cast<ssp_source *>(data);
-	ssp_stop(s);
-	obs_data_t *settings = obs_source_get_settings(s->source);
+	auto settings = obs_source_get_settings(s->source);
 	auto resolution = QString::fromUtf8(obs_data_get_string(settings, PROP_RESOLUTION));
 	auto fps = QString::fromUtf8(obs_data_get_string(settings, PROP_FRAME_RATE));
 	auto encoder = QString::fromUtf8(obs_data_get_string(settings, PROP_ENCODER));
+	auto depth = QString::fromUtf8(obs_data_get_string(settings, PROP_BIT_DEPTH));
 	int stream_index = (int)obs_data_get_int(settings, PROP_STREAM_INDEX);
 	int bitrate = (int)obs_data_get_int(settings, PROP_CAMERA_BITRATE);
+	QMap<QString, QString> desired;
+	for (const auto &definition : ssp_camera_controls()) {
+		auto it = s->cameraStatus->imaging.constFind(definition.key);
+		if (it == s->cameraStatus->imaging.cend())
+			continue;
+		QByteArray property = (QString("ssp_control_") + definition.key).toUtf8();
+		QString value = it->type == CONFIG_TYPE_RANGE
+					? QString::number(obs_data_get_int(settings, property.constData()))
+					: QString::fromUtf8(obs_data_get_string(settings, property.constData()));
+		if (value != ssp_camera_control_value(*it))
+			desired.insert(definition.key, value);
+	}
 	obs_data_release(settings);
-	s->cameraStatus->setStream(
-		stream_index, resolution, false, fps, encoder, bitrate, [=](bool ok, QString reason) {
-			ssp_blog(ok ? LOG_INFO : LOG_WARNING, "Camera settings: %s", reason.toUtf8().constData());
-			obs_data_t *settings = obs_source_get_settings(s->source);
-			obs_data_set_string(settings, PROP_CAMERA_STATUS, reason.toUtf8().constData());
-			obs_data_release(settings);
+	s->paused = true;
+	ssp_stop(s);
+	auto life = *s->lifetime;
+	auto finish = ssp_with_source(life, [](ssp_source *s, bool ok, QString reason) {
+		ssp_blog(ok ? LOG_INFO : LOG_WARNING, "Camera settings: %s", reason.toUtf8().constData());
+		if (ok) {
+			s->paused = false;
 			ssp_start(s);
-			if (ok)
-				read_camera_settings(s);
-			else
-				obs_source_update_properties(s->source);
-		});
+		}
+		read_camera_settings(s, ok ? "Camera settings applied; SSP playback resumed"
+					   : reason + ". Playback remains paused; readback shows actual state.");
+	});
+	s->cameraStatus->setStream(stream_index, resolution, false, fps, encoder, bitrate,
+				   ssp_with_source(life, [=](ssp_source *s, bool ok, QString reason) mutable {
+					   if (!ok)
+						   return finish(false, reason);
+					   auto imaging = ssp_with_source(life, [=](ssp_source *s, bool ok,
+										    QString reason) mutable {
+						   if (!ok)
+							   return finish(false, reason);
+						   s->cameraStatus->applyImaging(desired, finish);
+					   });
+					   if (ssp_camera_encoder(encoder) == "H.265")
+						   s->cameraStatus->setBitDepth(stream_index, depth, imaging);
+					   else
+						   imaging(true, QString{});
+				   }));
 	return false;
+}
+
+static void apply_obs_lut(ssp_source *s, obs_data_t *settings)
+{
+	const char *name = "SSP camera LUT";
+	obs_source_t *filter = nullptr;
+	const char *path = obs_data_get_string(settings, PROP_LUT_PATH);
+	bool enabled = obs_data_get_bool(settings, PROP_LUT_ENABLED);
+	auto owner = obs_source_get_private_settings(s->source);
+	QString id = QString::fromUtf8(obs_data_get_string(owner, "obs_ssp_lut_owner"));
+	if (id.isEmpty() && enabled) {
+		id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+		obs_data_set_string(owner, "obs_ssp_lut_owner", id.toUtf8().constData());
+	}
+	obs_data_release(owner);
+	struct Lookup {
+		QString id;
+		obs_source_t *filter;
+	};
+	Lookup lookup{id, nullptr};
+	obs_source_enum_filters(
+		s->source,
+		[](obs_source_t *, obs_source_t *candidate, void *data) {
+			auto lookup = static_cast<Lookup *>(data);
+			if (lookup->filter || lookup->id.isEmpty() ||
+			    strcmp(obs_source_get_unversioned_id(candidate), "clut_filter") != 0)
+				return;
+			auto settings = obs_source_get_private_settings(candidate);
+			bool owned = lookup->id ==
+				     QString::fromUtf8(obs_data_get_string(settings, "obs_ssp_lut_owner"));
+			obs_data_release(settings);
+			if (owned)
+				lookup->filter = obs_source_get_ref(candidate);
+		},
+		&lookup);
+	filter = lookup.filter;
+	if (!filter) {
+		auto collision = obs_source_get_filter_by_name(s->source, name);
+		if (collision) {
+			ssp_blog(LOG_WARNING,
+				 "A user filter already uses the SSP camera LUT name; leaving it untouched");
+			obs_source_release(collision);
+			return;
+		}
+	}
+	if (!filter && enabled && path && *path) {
+		if (!obs_get_source_output_flags("clut_filter")) {
+			ssp_blog(LOG_WARNING, "OBS color LUT filter is unavailable");
+			return;
+		}
+		auto options = obs_data_create();
+		obs_data_set_string(options, "image_path", path);
+		filter = obs_source_create("clut_filter", name, options, nullptr);
+		obs_data_release(options);
+		if (filter) {
+			auto filter_private = obs_source_get_private_settings(filter);
+			obs_data_set_string(filter_private, "obs_ssp_lut_owner", id.toUtf8().constData());
+			obs_data_release(filter_private);
+			obs_source_filter_add(s->source, filter);
+		}
+	} else if (filter && path && *path) {
+		auto options = obs_source_get_settings(filter);
+		if (strcmp(obs_data_get_string(options, "image_path"), path) != 0) {
+			obs_data_set_string(options, "image_path", path);
+			obs_source_update(filter, options);
+		}
+		obs_data_release(options);
+	}
+	if (filter) {
+		obs_source_set_enabled(filter, enabled);
+		obs_source_release(filter);
+	}
 }
 
 bool source_ip_modified(void *data, obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
@@ -672,6 +844,14 @@ obs_properties_t *ssp_source_getproperties(void *data)
 	for (const auto &encoder : s->cameraStatus->encoders)
 		obs_property_list_add_string(encoders, encoder.toUtf8().constData(), encoder.toUtf8().constData());
 
+	auto depth = obs_properties_add_list(props, PROP_BIT_DEPTH, "H.265 bit depth", OBS_COMBO_TYPE_LIST,
+					     OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(depth, "8-bit", "8bit");
+	obs_property_list_add_string(depth, "10-bit", "10bit");
+	obs_property_set_enabled(depth, s->paused);
+	obs_property_set_long_description(
+		depth,
+		"Pause streaming, choose H.265 and bit depth, then Apply. The camera must accept and report the selected depth.");
 	obs_properties_add_bool(props, PROP_EXP_WAIT_I, obs_module_text("SSPPlugin.SourceProps.WaitIFrame"));
 
 	obs_property_t *resolutions = obs_properties_add_list(props, PROP_RESOLUTION,
@@ -696,10 +876,54 @@ obs_properties_t *ssp_source_getproperties(void *data)
 	obs_property_list_add_int(stream, "Stream1 (secondary)", 1);
 	obs_properties_add_text(props, PROP_CAMERA_STATUS, obs_module_text("SSPPlugin.SourceProps.CameraStatus"),
 				OBS_TEXT_INFO);
+	obs_properties_add_button2(props, "ssp_camera_pause", "Pause SSP for camera controls", pause_camera_callback,
+				   data);
+	obs_properties_add_button2(props, "ssp_camera_resume", "Resume SSP playback", resume_camera_callback, data);
 	obs_properties_add_button2(props, "ssp_camera_read", obs_module_text("SSPPlugin.SourceProps.ReadCamera"),
 				   read_camera_callback, data);
 	obs_properties_add_button2(props, "ssp_camera_apply", obs_module_text("SSPPlugin.SourceProps.ApplyCamera"),
 				   apply_camera_callback, data);
+
+	QMap<QString, obs_properties_t *> groups;
+	for (const auto &definition : ssp_camera_controls()) {
+		auto it = s->cameraStatus->imaging.constFind(definition.key);
+		if (it == s->cameraStatus->imaging.cend())
+			continue;
+		QString group = definition.group;
+		if (!groups.contains(group)) {
+			auto child = obs_properties_create();
+			groups.insert(group, child);
+			obs_properties_add_group(props, (QString("ssp_group_") + group).toUtf8().constData(),
+						 definition.group, OBS_GROUP_NORMAL, child);
+		}
+		auto child = groups.value(group);
+		QByteArray property = (QString("ssp_control_") + definition.key).toUtf8();
+		obs_property_t *control = nullptr;
+		if (it->type == CONFIG_TYPE_CHOICE) {
+			control = obs_properties_add_list(child, property.constData(), definition.label,
+							  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+			for (const auto &choice : it->choices)
+				obs_property_list_add_string(control, choice.toUtf8().constData(),
+							     choice.toUtf8().constData());
+		} else if (it->type == CONFIG_TYPE_RANGE && it->min <= it->max) {
+			control = obs_properties_add_int(child, property.constData(), definition.label, it->min,
+							 it->max, it->step > 0 ? it->step : 1);
+		} else
+			control = obs_properties_add_text(child, property.constData(), definition.label,
+							  OBS_TEXT_DEFAULT);
+		obs_property_set_enabled(control, !it->readOnly);
+		if (it->readOnly)
+			obs_property_set_long_description(
+				control,
+				"The camera reports this control as read-only in its current mode. Pause streaming or select the prerequisite camera mode, then read settings again.");
+	}
+	if (s->cameraStatus->imaging.contains("focus"))
+		obs_properties_add_button2(props, "ssp_camera_af", "Autofocus now", autofocus_camera_callback, data);
+	auto lut = obs_properties_create();
+	obs_properties_add_bool(lut, PROP_LUT_ENABLED, "Apply LUT in OBS");
+	obs_properties_add_path(lut, PROP_LUT_PATH, "LUT file", OBS_PATH_FILE, "LUT files (*.cube *.png)", nullptr);
+	obs_properties_add_group(props, "ssp_obs_lut", "OBS color LUT (camera output stays unchanged)",
+				 OBS_GROUP_NORMAL, lut);
 
 	obs_property_t *tally =
 		obs_properties_add_bool(props, PROP_LED_TALLY, obs_module_text("SSPPlugin.SourceProps.LedAsTally"));
@@ -730,6 +954,8 @@ void ssp_source_getdefaults(obs_data_t *settings)
 void ssp_source_update(void *data, obs_data_t *settings)
 {
 	auto s = (struct ssp_source *)data;
+	if (!s->initializing)
+		apply_obs_lut(s, settings);
 
 	const char *source_ip = obs_data_get_string(settings, PROP_SOURCE_IP);
 	if (strcmp(source_ip, PROP_CUSTOM_VALUE) == 0)
@@ -776,9 +1002,17 @@ void ssp_source_update(void *data, obs_data_t *settings)
 	ssp_start(s);
 }
 
+void ssp_source_load(void *data, obs_data_t *settings)
+{
+	apply_obs_lut(static_cast<ssp_source *>(data), settings);
+}
+
 void ssp_source_shown(void *data)
 {
 	auto s = (struct ssp_source *)data;
+	auto settings = obs_source_get_settings(s->source);
+	apply_obs_lut(s, settings);
+	obs_data_release(settings);
 	if (s->tally) {
 		s->cameraStatus->setLed(true);
 	}
@@ -810,18 +1044,25 @@ void *ssp_source_create(obs_data_t *settings, obs_source_t *source)
 {
 	auto s = (struct ssp_source *)bzalloc(sizeof(struct ssp_source));
 	s->source = source;
+	s->lifetime = new SourceLife(std::make_shared<SspSourceLifetime<ssp_source>>());
+	(*s->lifetime)->source = s;
+	s->initializing = true;
 	s->do_check = false;
 	s->no_check = false;
 	s->ip_checked = false;
 	s->cameraStatus = new CameraStatus();
 	s->source_ip = nullptr;
 	ssp_source_update(s, settings);
+	s->initializing = false;
 	return s;
 }
 
 void ssp_source_destroy(void *data)
 {
 	auto s = (struct ssp_source *)data;
+	auto life = *s->lifetime;
+	std::lock_guard<std::recursive_mutex> guard(life->mutex);
+	life->source = nullptr;
 	ssp_blog(LOG_INFO, "destroying source...");
 	delete s->cameraStatus;
 	s->cameraStatus = nullptr;
@@ -831,6 +1072,7 @@ void ssp_source_destroy(void *data)
 	}
 
 	ssp_stop(s);
+	delete s->lifetime;
 	bfree(s);
 	ssp_blog(LOG_INFO, "source destroyed.");
 }
@@ -851,6 +1093,7 @@ struct obs_source_info create_ssp_source_info()
 	ssp_source_info.deactivate = ssp_source_deactivated;
 	ssp_source_info.create = ssp_source_create;
 	ssp_source_info.destroy = ssp_source_destroy;
+	ssp_source_info.load = ssp_source_load;
 
 	return ssp_source_info;
 }

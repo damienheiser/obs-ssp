@@ -21,6 +21,8 @@ along with this program; If not, see <https://www.gnu.org/licenses/>
 
 #include <functional>
 #include <QObject>
+#include <QMap>
+#include "camera-control-model.h"
 #include "controller/cameracontroller.h"
 
 #define E2C_MODEL_CODE "elephant"
@@ -52,6 +54,10 @@ public:
 	QStringList encoders;
 	QString current_encoder;
 	QString current_stream;
+	QMap<QString, CameraConfigInfo> imaging;
+	void readImaging(StatusUpdateCallback cb);
+	void applyImaging(QMap<QString, QString> desired, StatusReasonUpdateCallback cb);
+	void setBitDepth(int stream_index, QString value, StatusReasonUpdateCallback cb);
 	std::vector<QString> framerates;
 	QString current_framerate;
 	StreamInfo current_streamInfo;
@@ -70,6 +76,8 @@ private slots:
 	void doSetLed(bool on);
 
 private:
+	void readImagingAt(size_t index, StatusUpdateCallback cb);
+	void applyImagingAt(size_t index, QMap<QString, QString> desired, StatusReasonUpdateCallback cb);
 	void applyStreamCodec(int stream_index, QString encoder, StatusReasonUpdateCallback cb);
 	void applyConfig(QString key, QString value, StatusReasonUpdateCallback cb);
 	CameraController *controller;

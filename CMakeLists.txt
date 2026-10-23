@@ -137,6 +137,11 @@ endif()
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
 if(SSP_BUILD_TESTS)
+  add_executable(test-camera-imaging cmake/tests/test-camera-imaging.cpp)
+  target_include_directories(test-camera-imaging PRIVATE src)
+  target_link_libraries(test-camera-imaging PRIVATE Qt6::Core Qt6::Network)
+  add_test(NAME camera-imaging COMMAND test-camera-imaging)
+
   add_executable(test-frame-queue cmake/tests/test-frame-queue.cpp src/VFrameQueue.cpp)
   target_include_directories(test-frame-queue PRIVATE src lib/ssp/include)
   target_link_libraries(test-frame-queue PRIVATE Qt6::Core OBS::libobs)
@@ -167,6 +172,10 @@ if(SSP_BUILD_TESTS)
   target_include_directories(test-decoder PRIVATE src)
   target_link_libraries(test-decoder PRIVATE OBS::libobs FFmpeg::avcodec FFmpeg::avutil)
   target_compile_definitions(test-decoder PRIVATE ENABLE_HEVC)
+  add_executable(test-decoder-prores cmake/tests/test-decoder-prores.c src/ffmpeg-decode.c)
+  target_include_directories(test-decoder-prores PRIVATE src)
+  target_link_libraries(test-decoder-prores PRIVATE OBS::libobs FFmpeg::avcodec FFmpeg::avutil)
+  target_compile_definitions(test-decoder-prores PRIVATE ENABLE_HEVC)
   add_executable(test-decoder-video cmake/tests/test-decoder-video.c src/ffmpeg-decode.c)
   add_executable(test-decoder-pcm cmake/tests/test-decoder-pcm.c src/ffmpeg-decode.c)
   foreach(_decoder_target test-decoder-video test-decoder-pcm)
@@ -201,6 +210,14 @@ if(SSP_BUILD_TESTS)
     )
     set_tests_properties(decoder-matrix PROPERTIES TIMEOUT 180)
   endif()
+  if(FFMPEG_EXECUTABLE AND Python3_Interpreter_FOUND)
+    add_test(
+      NAME decoder-prores
+      COMMAND
+        ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/test_decode_prores.py ${FFMPEG_EXECUTABLE}
+        $<TARGET_FILE:test-decoder-prores>
+    )
+  endif()
   if(OS_MACOS)
     set(_test_rpaths "")
     foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
@@ -209,11 +226,13 @@ if(SSP_BUILD_TESTS)
     list(JOIN _test_rpaths " " _test_rpath_string)
     foreach(
       _test_target
+      test-camera-imaging
       test-camera-settings
       test-camera-config
       test-camera-live
       test-frame-queue
       test-decoder
+      test-decoder-prores
       test-decoder-video
       test-decoder-pcm
     )

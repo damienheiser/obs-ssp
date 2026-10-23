@@ -168,6 +168,8 @@ static inline enum video_format convert_pixel_format(int f)
 		return VIDEO_FORMAT_BGRA;
 	case AV_PIX_FMT_YUV420P10LE:
 		return VIDEO_FORMAT_I010;
+	case AV_PIX_FMT_YUV422P10LE:
+		return VIDEO_FORMAT_I210;
 	case AV_PIX_FMT_BGR0:
 		return VIDEO_FORMAT_BGRX;
 	case AV_PIX_FMT_P010LE:

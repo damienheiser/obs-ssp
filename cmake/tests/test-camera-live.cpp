@@ -2,12 +2,25 @@
 #include <QCoreApplication>
 #include <QTimer>
 #include <cstdio>
+#include <cstring>
 
 int main(int argc, char **argv)
 {
 	QCoreApplication app(argc, argv);
 	if (argc < 2)
 		return 2;
+	if (argc > 2 && strcmp(argv[2], "--cancel") == 0) {
+		bool completed = false;
+		auto pending = new CameraStatus();
+		pending->setIp(QString::fromUtf8(argv[1]));
+		pending->refreshAll([&](bool) { completed = true; });
+		delete pending;
+		QTimer::singleShot(500, &app, [&]() {
+			printf("deleted-controller callback=%d\n", completed);
+			app.exit(completed ? 7 : 0);
+		});
+		return app.exec();
+	}
 	CameraStatus camera;
 	camera.setIp(QString::fromUtf8(argv[1]));
 	QTimer::singleShot(20000, &app, [&]() { app.exit(3); });
@@ -18,6 +31,8 @@ int main(int argc, char **argv)
 		       camera.model.toUtf8().constData(), camera.current_resolution.toUtf8().constData(),
 		       camera.current_framerate.toUtf8().constData(), camera.current_stream.toUtf8().constData(),
 		       camera.current_streamInfo.encoderType_.toUtf8().constData(), camera.current_streamInfo.bitrate_);
+		printf("bit_depth=%s imaging_controls=%lld\n", camera.current_streamInfo.bitWidth_.toUtf8().constData(),
+		       (long long)camera.imaging.size());
 		if (argc > 2 &&
 		    (camera.current_resolution != "C4K (Low Noise)" || camera.current_framerate != "29.97" ||
 		     camera.current_stream != "Stream0" || camera.current_encoder != "H.264"))

@@ -32,6 +32,17 @@
 
 #include "cameraconfig.h"
 
+static QString camera_json_value(const QJsonValue &value)
+{
+	if (value.isString())
+		return value.toString();
+	if (value.isDouble())
+		return QString::number(value.toDouble(), 'g', 15);
+	if (value.isBool())
+		return value.toBool() ? "true" : "false";
+	return {};
+}
+
 CameraConfig::CameraConfig() {}
 
 CameraConfig::~CameraConfig()
@@ -40,18 +51,24 @@ CameraConfig::~CameraConfig()
 }
 void CameraConfig::parseForConfig(const QJsonObject &json, HttpResponse *response)
 {
-	response->readOnly = json["ro"].toInt() == 0 ? false : true;
+	response->readOnly = true;
+	auto ro = json["ro"];
+	if (ro.isBool())
+		response->readOnly = ro.toBool();
+	else if (ro.isDouble() && (ro.toDouble() == 0 || ro.toDouble() == 1))
+		response->readOnly = ro.toInt() != 0;
+
 	response->key = json["key"].toString();
 	response->code = json["code"].toInt();
 
 	int t = json["type"].toInt();
 	if (t == CONFIG_TYPE_CHOICE) {
 		response->type = CONFIG_TYPE_CHOICE;
-		response->currentValue = json["value"].toString();
+		response->currentValue = camera_json_value(json["value"]);
 		response->choices.clear();
 		QJsonArray opts = json["opts"].toArray();
 		for (int index = 0; index < opts.size(); index++) {
-			QString val = opts[index].toString();
+			QString val = camera_json_value(opts[index]);
 			response->choices.append(val);
 		}
 	} else if (t == CONFIG_TYPE_RANGE) {
@@ -62,7 +79,7 @@ void CameraConfig::parseForConfig(const QJsonObject &json, HttpResponse *respons
 		response->step = json["step"].toInt();
 	} else {
 		response->type = CONFIG_TYPE_STRING;
-		response->currentValue = json["value"].toString();
+		response->currentValue = camera_json_value(json["value"]);
 	}
 }
 
