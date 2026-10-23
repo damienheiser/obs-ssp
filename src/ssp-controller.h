@@ -48,26 +48,30 @@ public:
 	QString model;
 	std::vector<QString> resolutions;
 	QString current_resolution;
+	QStringList movie_formats;
+	QStringList encoders;
+	QString current_encoder;
+	QString current_stream;
 	std::vector<QString> framerates;
 	QString current_framerate;
 	StreamInfo current_streamInfo;
-	void setStream(int stream_index, QString resolution, bool low_noise,
-		       QString fps, int bitrate, StatusReasonUpdateCallback cb);
+	void setStream(int stream_index, QString resolution, bool low_noise, QString fps, QString encoder, int bitrate,
+		       StatusReasonUpdateCallback cb);
 
 signals:
-	void onSetStream(int stream_index, QString resolution, bool low_noise,
-			 QString fps, int bitrate,
-			 StatusReasonUpdateCallback cb);
+	void onSetStream(int stream_index, QString resolution, bool low_noise, QString fps, QString encoder,
+			 int bitrate, StatusReasonUpdateCallback cb);
 	void onRefresh(StatusUpdateCallback cb);
 	void onSetLed(bool on);
 private slots:
-	void doSetStream(int stream_index, QString resolution, bool low_noise,
-			 QString fps, int bitrate,
-			 StatusReasonUpdateCallback cb);
+	void doSetStream(int stream_index, QString resolution, bool low_noise, QString fps, QString encoder,
+			 int bitrate, StatusReasonUpdateCallback cb);
 	void doRefresh(StatusUpdateCallback cb);
 	void doSetLed(bool on);
 
 private:
+	void applyStreamCodec(int stream_index, QString encoder, StatusReasonUpdateCallback cb);
+	void applyConfig(QString key, QString value, StatusReasonUpdateCallback cb);
 	CameraController *controller;
 };
 

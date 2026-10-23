@@ -97,6 +97,8 @@ set_source_files_properties(
 # /!\ TAKE NOTE: No need to edit things past this point /!\
 
 # --- Platform-independent build settings ---
+# Qt adds its own FindFFmpeg; use the component targets that keep SDK headers and libraries together.
+list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/Modules")
 find_package(FFmpeg REQUIRED COMPONENTS avcodec avutil)
 add_subdirectory(thirdpty)
 
@@ -133,3 +135,104 @@ elseif(OS_LINUX)
 endif()
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
+
+if(SSP_BUILD_TESTS)
+  add_executable(test-frame-queue cmake/tests/test-frame-queue.cpp src/VFrameQueue.cpp)
+  target_include_directories(test-frame-queue PRIVATE src lib/ssp/include)
+  target_link_libraries(test-frame-queue PRIVATE Qt6::Core OBS::libobs)
+  add_test(NAME frame-queue COMMAND test-frame-queue)
+
+  add_executable(
+    test-camera-live
+    cmake/tests/test-camera-live.cpp
+    src/ssp-controller.cpp
+    src/controller/cameracontroller.cpp
+    src/controller/cameraconfig.cpp
+  )
+  set_target_properties(test-camera-live PROPERTIES AUTOMOC ON)
+  target_include_directories(test-camera-live PRIVATE src)
+  target_link_libraries(test-camera-live PRIVATE Qt6::Core Qt6::Network OBS::libobs)
+
+  add_executable(test-camera-config cmake/tests/test-camera-config.cpp src/controller/cameraconfig.cpp)
+  target_include_directories(test-camera-config PRIVATE src)
+  target_link_libraries(test-camera-config PRIVATE Qt6::Core Qt6::Network)
+  add_test(NAME camera-config COMMAND test-camera-config)
+
+  add_executable(test-camera-settings cmake/tests/test-camera-settings.cpp)
+  target_include_directories(test-camera-settings PRIVATE src)
+  target_link_libraries(test-camera-settings PRIVATE Qt6::Core)
+  add_test(NAME camera-settings COMMAND test-camera-settings)
+
+  add_executable(test-decoder cmake/tests/test-decoder.c src/ffmpeg-decode.c)
+  target_include_directories(test-decoder PRIVATE src)
+  target_link_libraries(test-decoder PRIVATE OBS::libobs FFmpeg::avcodec FFmpeg::avutil)
+  target_compile_definitions(test-decoder PRIVATE ENABLE_HEVC)
+  add_executable(test-decoder-video cmake/tests/test-decoder-video.c src/ffmpeg-decode.c)
+  add_executable(test-decoder-pcm cmake/tests/test-decoder-pcm.c src/ffmpeg-decode.c)
+  foreach(_decoder_target test-decoder-video test-decoder-pcm)
+    target_include_directories(${_decoder_target} PRIVATE src)
+    target_link_libraries(${_decoder_target} PRIVATE OBS::libobs FFmpeg::avcodec FFmpeg::avutil)
+    target_compile_definitions(${_decoder_target} PRIVATE ENABLE_HEVC)
+  endforeach()
+  set(SSP_TEST_OLD_FFMPEG_INCLUDE "" CACHE PATH "Optional actual incompatible FFmpeg headers for ABI rejection test")
+  if(SSP_TEST_OLD_FFMPEG_INCLUDE)
+    add_executable(test-decoder-incompatible cmake/tests/test-decoder-incompatible.c src/ffmpeg-decode.c)
+    target_include_directories(test-decoder-incompatible BEFORE PRIVATE ${SSP_TEST_OLD_FFMPEG_INCLUDE} src)
+    target_link_libraries(test-decoder-incompatible PRIVATE OBS::libobs FFmpeg::avcodec FFmpeg::avutil)
+    target_compile_definitions(test-decoder-incompatible PRIVATE ENABLE_HEVC)
+    add_test(NAME decoder-incompatible COMMAND test-decoder-incompatible)
+  endif()
+  find_program(FFMPEG_EXECUTABLE ffmpeg)
+  find_package(Python3 QUIET COMPONENTS Interpreter)
+  if(FFMPEG_EXECUTABLE AND Python3_Interpreter_FOUND)
+    add_test(
+      NAME decoder-aac
+      COMMAND
+        ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/test_decode.py $<TARGET_FILE:test-decoder>
+        ${FFMPEG_EXECUTABLE}
+    )
+  endif()
+  if(FFMPEG_EXECUTABLE AND Python3_Interpreter_FOUND)
+    add_test(
+      NAME decoder-matrix
+      COMMAND
+        ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/tests/test_decode_matrix.py ${FFMPEG_EXECUTABLE}
+        $<TARGET_FILE:test-decoder-video> $<TARGET_FILE:test-decoder-pcm>
+    )
+    set_tests_properties(decoder-matrix PROPERTIES TIMEOUT 180)
+  endif()
+  if(OS_MACOS)
+    set(_test_rpaths "")
+    foreach(_prefix IN LISTS CMAKE_PREFIX_PATH)
+      list(APPEND _test_rpaths "${_prefix}" "${_prefix}/lib" "${_prefix}/Frameworks")
+    endforeach()
+    list(JOIN _test_rpaths " " _test_rpath_string)
+    foreach(
+      _test_target
+      test-camera-settings
+      test-camera-config
+      test-camera-live
+      test-frame-queue
+      test-decoder
+      test-decoder-video
+      test-decoder-pcm
+    )
+      set_target_properties(
+        ${_test_target}
+        PROPERTIES
+          BUILD_RPATH "${_test_rpaths}"
+          BUILD_WITH_INSTALL_RPATH FALSE
+          XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "${_test_rpath_string}"
+          XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME NO
+      )
+    endforeach()
+    if(TARGET test-decoder-incompatible)
+      set_target_properties(
+        test-decoder-incompatible
+        PROPERTIES
+          XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS "${_test_rpath_string}"
+          XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME NO
+      )
+    endif()
+  endif()
+endif()

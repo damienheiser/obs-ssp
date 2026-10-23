@@ -58,7 +58,7 @@ QQ (Chinese only):
 
 ### Prerequisites
 
-- **OBS Studio** 28+ development headers
+- **OBS Studio** 32.2+ development headers
 - **CMake** 3.16+
 - **OpenSSL** development libraries (for native SSP)
 
@@ -166,10 +166,10 @@ The build configuration tracks [obs-plugintemplate](https://github.com/obsprojec
 Use CMake 3.30+ and initialize submodules with `git submodule update --init --recursive`.
 
 - Windows: Visual Studio 2022 and Windows SDK 10.0.22621. Run `cmake --preset windows-x64`, then `cmake --build --preset windows-x64`.
-- macOS: Xcode 16+ with the macOS 15 SDK. Run `cmake --preset macos`, then `cmake --build --preset macos`. The universal plugin targets macOS 12+.
+- macOS: Xcode 16+ with the macOS 15 SDK. Run `cmake --preset macos`, then `cmake --build --preset macos`. The universal plugin targets macOS 13+.
 - Stage Windows files with `cmake --install build_x64 --config RelWithDebInfo --prefix release/RelWithDebInfo`; copy the resulting `obs-ssp` directory to `%PROGRAMDATA%/obs-studio/plugins/`. The connector and libssp DLL must remain beside the plugin DLL.
 
-CMake fetches the OBS 31.1.1 SDK, prebuilt dependencies, and Qt 6. Windows and macOS use libssp by default, while Linux uses the native SSP connector. Qt is required for camera controls and discovery. Scripts under `.github/scripts/` are intended for CI.
+CMake fetches the OBS 32.2.2 SDK, prebuilt dependencies, and Qt 6. Windows and macOS use libssp by default, while Linux uses the native SSP connector. Qt is required for camera controls and discovery. Scripts under `.github/scripts/` are intended for CI.
 
 ## License
 
@@ -186,3 +186,9 @@ Original obs-ssp plugin: Copyright (c) 2015-2021, Yibai Zhang
 - **Hedonistic, LLC** — native SSP client, protocol reverse engineering, Linux aarch64 support
 - [libssp-py](https://pypi.org/project/libssp-py/) — reference for authentication algorithm
 - [Z CAM](https://www.z-cam.com/) — camera manufacturer
+
+## Camera settings and playback compatibility
+
+The macOS/Windows presets build against OBS 32.2.2 and its matching FFmpeg 8 dependency set. FFmpeg major versions must match the running OBS; an incompatible build is rejected before decoding. Linux uses the installed development packages.
+
+SSP Source reads the camera's resolution, exact frame-rate choices and H.264/H.265 options. **Read camera settings** refreshes these values; **Apply camera settings** explicitly changes them. Opening OBS, switching sync modes, or changing decoding options never rewrites camera settings. Resolution labels include the camera's Low Noise variants directly. Stream0/Stream1 selection is independent of codec. Legacy saved resolution/codec values are recognized. Applying settings closes this source's SSP connection before camera reconfiguration, then reconnects and reads back the result.

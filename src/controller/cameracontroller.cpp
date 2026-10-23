@@ -223,14 +223,14 @@ void CameraController::setStreamResolution(const QString &index, const QString &
 		.append(height);
 	requestForCode(shortPath, callback);
 }
-void CameraController::setStreamCodec(const QString &index, const QString &, OnRequestCallback callback)
+void CameraController::setStreamCodec(const QString &index, const QString &codec, OnRequestCallback callback)
 {
-	QString shortPath;
-	// /ctrl/stream_setting?index=stream1&width=1920&height=1080
-	//shortPath.append(URL_CTRL_STREAM_SETTING).append("?index=").append(index).append("&encoderType=").append(codec).append("bitwidth=8bit");
-	shortPath.append(URL_CTRL_STREAM_SETTING).append("?index=").append(index.toLower()).append("&bitwidth=8bit");
+	QString value = codec.toLower();
+	value.remove('.');
+	QString shortPath = QString(URL_CTRL_STREAM_SETTING) + "?index=" + index.toLower() + "&venc=" + value;
 	requestForCode(shortPath, callback);
 }
+
 void CameraController::setStreamGop(const QString &index, const QString &gop, OnRequestCallback callback)
 {
 	QString shortPath;
@@ -282,7 +282,7 @@ void CameraController::nextRequest(HttpRequest *req)
 
 	auto reply_ = networkManager_->get(request);
 	QTimer::singleShot(req->timeout, reply_, SLOT(abort()));
-	connect(reply_, &QNetworkReply::finished, [=]() { handleRequestResult(req, reply_); });
+	connect(reply_, &QNetworkReply::finished, this, [=]() { handleRequestResult(req, reply_); });
 }
 
 void CameraController::nextRequest()

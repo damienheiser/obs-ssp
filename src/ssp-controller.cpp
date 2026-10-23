@@ -17,6 +17,7 @@ along with this program; If not, see <https://www.gnu.org/licenses/>
 */
 
 #include <QMetaType>
+#include "ssp-settings.h"
 #include "ssp-controller.h"
 #include <obs-module.h>
 
@@ -26,8 +27,8 @@ CameraStatus::CameraStatus() : QObject()
 
 	qRegisterMetaType<StatusUpdateCallback>("StatusUpdateCallback");
 	qRegisterMetaType<StatusReasonUpdateCallback>("StatusReasonUpdateCallback");
-	connect(this, SIGNAL(onSetStream(int, QString, bool, QString, int, StatusReasonUpdateCallback)), this,
-		SLOT(doSetStream(int, QString, bool, QString, int, StatusReasonUpdateCallback)));
+	connect(this, SIGNAL(onSetStream(int, QString, bool, QString, QString, int, StatusReasonUpdateCallback)), this,
+		SLOT(doSetStream(int, QString, bool, QString, QString, int, StatusReasonUpdateCallback)));
 	connect(this, SIGNAL(onSetLed(bool)), this, SLOT(doSetLed(bool)));
 	connect(this, SIGNAL(onRefresh(StatusUpdateCallback)), this, SLOT(doRefresh(StatusUpdateCallback)));
 };
@@ -51,7 +52,7 @@ void CameraStatus::getResolution(const StatusUpdateCallback &callback)
 			resolutions.push_back(i);
 		}
 
-		current_framerate = rsp->currentValue;
+		current_resolution = rsp->currentValue;
 
 		callback(true);
 		return true;
@@ -85,7 +86,8 @@ void CameraStatus::getCurrentStream(const StatusUpdateCallback &callback)
 			callback(false);
 			return false;
 		}
-		controller->getStreamInfo(rsp->currentValue, [=](HttpResponse *rsp) {
+		current_stream = rsp->currentValue;
+		controller->getStreamInfo(rsp->currentValue.toLower(), [=](HttpResponse *rsp) {
 			if (rsp->statusCode == 999) {
 				callback(false);
 				return false;
@@ -105,10 +107,33 @@ void CameraStatus::refreshAll(const StatusUpdateCallback &cb)
 
 void CameraStatus::doRefresh(StatusUpdateCallback cb)
 {
-	this->model = "";
+	model.clear();
 	getInfo([=](bool ok) {
-		cb(ok);
-		return ok;
+		if (!ok)
+			return cb(false);
+		getResolution([=](bool ok) {
+			if (!ok)
+				return cb(false);
+			getFramerate([=](bool ok) {
+				if (!ok)
+					return cb(false);
+				controller->getCameraConfig(CONFIG_KEY_VIDEO_ENCODER, [=](HttpResponse *rsp) {
+					if (rsp->statusCode != 200 || rsp->code != 0)
+						return cb(false);
+					current_encoder = rsp->currentValue;
+					encoders.clear();
+					for (const auto &choice : rsp->choices)
+						if (choice == "H.264" || choice == "H.265")
+							encoders.append(choice);
+					controller->getCameraConfig(CONFIG_KEY_MOVIE_FORMAT, [=](HttpResponse *rsp) {
+						movie_formats = rsp->statusCode == 200 && rsp->code == 0
+									? QStringList(rsp->choices)
+									: QStringList();
+						getCurrentStream(cb);
+					});
+				});
+			});
+		});
 	});
 }
 void CameraStatus::getInfo(const StatusUpdateCallback &callback)
@@ -133,105 +158,78 @@ void CameraStatus::doSetLed(bool isOn)
 	controller->setCameraConfig(CONFIG_KEY_LED, isOn ? "On" : "Off", [](HttpResponse *) {});
 }
 
-void CameraStatus::setStream(int stream_index, QString resolution, bool low_noise, QString fps, int bitrate,
-			     StatusReasonUpdateCallback cb)
+void CameraStatus::applyConfig(QString key, QString value, StatusReasonUpdateCallback cb)
 {
-	blog(LOG_INFO, "In ::setStream emitting onSetStream");
-	emit onSetStream(stream_index, resolution, low_noise, fps, bitrate, cb);
+	controller->getCameraConfig(key, [=](HttpResponse *rsp) {
+		if (rsp->statusCode != 200 || rsp->code != 0)
+			return cb(false, QString("Could not read %1").arg(key));
+		if (rsp->currentValue == value)
+			return cb(true, {});
+		if (rsp->readOnly || (!rsp->choices.isEmpty() && !rsp->choices.contains(value)))
+			return cb(false, QString("Camera does not support %1 = %2").arg(key, value));
+		controller->setCameraConfig(key, value, [=](HttpResponse *rsp) {
+			if (rsp->statusCode != 200 || rsp->code != 0)
+				return cb(false, QString("Could not set %1 = %2").arg(key, value));
+			cb(true, {});
+		});
+	});
 }
 
-void CameraStatus::doSetStream(int stream_index, QString resolution, bool low_noise, QString fps, int bitrate,
-			       StatusReasonUpdateCallback cb)
+void CameraStatus::applyStreamCodec(int stream_index, QString encoder, StatusReasonUpdateCallback cb)
 {
-	bool need_downresolution = false;
-	blog(LOG_INFO, "In doSetStream");
-	if (model.contains(E2C_MODEL_CODE, Qt::CaseInsensitive)) {
-		if (resolution != "1920*1080" && fps.toDouble() > 30) {
-			return cb(false, QString("Cannot go higher than 30fps for >1920x1080 resolution on E2C"));
-		}
-		if (resolution == "1920*1080" && fps.toDouble() > 30) {
-			need_downresolution = true;
-		}
-	}
-	auto bitrate2 = QString::number(bitrate);
-
-	if (model.contains(IPMANS_MODEL_CODE, Qt::CaseInsensitive)) {
-		auto index = QString("stream") + QString::number(stream_index + 1);
-		controller->setStreamBitrate(index, bitrate2, [=](HttpResponse *rsp) {
-			if (rsp->statusCode != 200 || rsp->code != 0) {
-				return cb(false, QString("Could not set bitrate to %1").arg(bitrate2));
-			}
-			return cb(true, "Success");
+	if (stream_index == 0)
+		return applyConfig(CONFIG_KEY_VIDEO_ENCODER, encoder, cb);
+	auto index = QString("stream%1").arg(stream_index);
+	controller->getStreamInfo(index, [=](HttpResponse *rsp) {
+		if (rsp->statusCode != 200 || rsp->code != 0)
+			return cb(false, "Could not read stream codec");
+		if (ssp_camera_encoder(rsp->streamInfo.encoderType_) == encoder)
+			return cb(true, {});
+		controller->setStreamCodec(index, encoder, [=](HttpResponse *rsp) {
+			cb(rsp->statusCode == 200 && rsp->code == 0, "Stream codec update");
 		});
-		return;
-	}
+	});
+}
 
-	QString real_resolution;
-	QString width, height;
-	auto arr = resolution.split("*");
-	if (arr.size() < 2) {
-		return cb(false, "Resolution doesn't have a single * to seperate w from h");
-	}
-	width = arr[0];
-	height = arr[1];
-	if (need_downresolution) {
-		real_resolution = "1920x1080";
-	} else if (resolution == "3840*2160" || resolution == "1920*1080") {
-		real_resolution = "4K";
-		if (low_noise)
-			real_resolution += " (Low Noise)";
-	} else if (resolution == "4096*2160") {
-		real_resolution = "C4K";
-		if (low_noise)
-			real_resolution += " (Low Noise)";
-	} else {
-		return cb(false, QString("Unknown resolution: ").arg(resolution));
-	}
+void CameraStatus::setStream(int stream_index, QString resolution, bool low_noise, QString fps, QString encoder,
+			     int bitrate, StatusReasonUpdateCallback cb)
+{
+	emit onSetStream(stream_index, resolution, low_noise, fps, encoder, bitrate, cb);
+}
 
-	auto index = QString("Stream") + QString::number(stream_index);
-	blog(LOG_INFO, "Setting movie resolution");
-	controller->setCameraConfig(CONFIG_KEY_MOVIE_RESOLUTION, real_resolution, [=](HttpResponse *rsp) {
-		if (rsp->statusCode != 200 || rsp->code != 0) {
-			return cb(false, QString("Failed to set movie resolution to %1").arg(real_resolution));
-		}
-		blog(LOG_INFO, "Setting fps");
-		controller->setCameraConfig(CONFIG_KEY_PROJECT_FPS, fps, [=](HttpResponse *rsp) {
-			if (rsp->statusCode != 200 || rsp->code != 0) {
-				return cb(false, QString("Failed to set fps to %1").arg(fps));
-			}
-			blog(LOG_INFO, "Setting encoder");
-			controller->setCameraConfig(CONFIG_KEY_VIDEO_ENCODER, "H.265", [=](HttpResponse *) {
-				blog(LOG_INFO, "Setting sendStream");
-
-				controller->setSendStream(index, [=](HttpResponse *rsp) {
-					if (rsp->statusCode != 200 || rsp->code != 0) {
-						return cb(false, QString("Could not set video encoder to H.265"));
-					}
-					blog(LOG_INFO, "Setting bitrate andn gop");
-					controller->setStreamBitrateAndGop(
-						index.toLower(), bitrate2, "10", [=](HttpResponse *rsp) {
-							if (rsp->statusCode != 200 || rsp->code != 0) {
-								return cb(
-									false,
-									QString("Could not set bitrate to %1 or GOP to 10")
-										.arg(bitrate2));
-							}
-							if (stream_index == 0) {
-								return cb(true, "Success");
-							}
-							blog(LOG_INFO, "Setting stream resolution");
-							controller->setStreamResolution(
-								index.toLower(), width, height, [=](HttpResponse *rsp) {
-									if (rsp->statusCode != 200 || rsp->code != 0) {
-										return cb(
-											false,
-											QString("Could not set stream resolution to %1 x %2")
-												.arg(width)
-												.arg(height));
-									}
-									return cb(true, "Success");
-								});
-						});
+void CameraStatus::doSetStream(int stream_index, QString resolution, bool low_noise, QString fps, QString encoder,
+			       int bitrate, StatusReasonUpdateCallback cb)
+{
+	resolution = ssp_camera_resolution(resolution, low_noise);
+	encoder = ssp_camera_encoder(encoder);
+	if (stream_index != 0 && stream_index != 1)
+		return cb(false, "Invalid stream index");
+	auto index = QString("Stream%1").arg(stream_index);
+	applyConfig(CONFIG_KEY_MOVIE_RESOLUTION, resolution, [=](bool ok, QString reason) {
+		if (!ok)
+			return cb(false, reason);
+		applyConfig(CONFIG_KEY_PROJECT_FPS, fps, [=](bool ok, QString reason) {
+			if (!ok)
+				return cb(false, reason);
+			applyStreamCodec(stream_index, encoder, [=](bool ok, QString reason) {
+				if (!ok)
+					return cb(false, reason);
+				applyConfig(CONFIG_KEY_SEND_STREAM, index, [=](bool ok, QString reason) {
+					if (!ok)
+						return cb(false, reason);
+					controller->getStreamInfo(index.toLower(), [=](HttpResponse *rsp) {
+						if (rsp->statusCode != 200 || rsp->code != 0)
+							return cb(false, "Could not read stream settings");
+						// Query bitrate is kbit/s; the write API takes bit/s. Preserve GOP and bit depth.
+						if (rsp->streamInfo.bitrate_ == bitrate)
+							return cb(true, "Camera settings applied");
+						controller->setStreamBitrate(
+							index.toLower(), QString::number((int64_t)bitrate * 1000),
+							[=](HttpResponse *rsp) {
+								cb(rsp->statusCode == 200 && rsp->code == 0,
+								   "Camera bitrate update");
+							});
+					});
 				});
 			});
 		});

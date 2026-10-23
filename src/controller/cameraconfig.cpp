@@ -38,8 +38,7 @@ CameraConfig::~CameraConfig()
 {
 	//TODO delete something
 }
-void CameraConfig::parseForConfig(const QJsonObject &json,
-				  HttpResponse *response)
+void CameraConfig::parseForConfig(const QJsonObject &json, HttpResponse *response)
 {
 	response->readOnly = json["ro"].toInt() == 0 ? false : true;
 	response->key = json["key"].toString();
@@ -67,17 +66,20 @@ void CameraConfig::parseForConfig(const QJsonObject &json,
 	}
 }
 
-void CameraConfig::parseForCommon(const QJsonObject &json,
-				  HttpResponse *response)
+void CameraConfig::parseForCommon(const QJsonObject &json, HttpResponse *response)
 {
 	response->code = json["code"].toInt();
 	response->msg = json["msg"].toString();
 }
 
-void CameraConfig::parseForStreamInfo(const QJsonObject &json,
-				      HttpResponse *response)
+void CameraConfig::parseForStreamInfo(const QJsonObject &json, HttpResponse *response)
 {
-	response->code = 0;
+	response->code = json.contains("code") ? json["code"].toInt(-1) : 0;
+	if (response->code != 0 || !json["streamIndex"].isString() || json["width"].toInt() <= 0 ||
+	    json["height"].toInt() <= 0) {
+		response->code = -1;
+		return;
+	}
 	response->streamInfo.bitrate_ = json["bitrate"].toInt();
 	response->streamInfo.encoderType_ = json["encoderType"].toString();
 	response->streamInfo.gop_ = json["gop_n"].toInt();

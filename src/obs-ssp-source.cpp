@@ -40,6 +40,7 @@ along with this program; If not, see <https://www.gnu.org/licenses/>
 #include "imf/threadloop.h"
 
 #include "ssp-controller.h"
+#include "ssp-settings.h"
 #include "ssp-client-iso.h"
 #include "VFrameQueue.h"
 
@@ -77,6 +78,8 @@ extern "C" {
 #define PROP_BITRATE "ssp_bitrate"
 #define PROP_STREAM_INDEX "ssp_stream_index"
 #define PROP_ENCODER "ssp_encoding"
+#define PROP_CAMERA_BITRATE "ssp_camera_bitrate_kbps"
+#define PROP_CAMERA_STATUS "ssp_camera_status"
 
 #define SSP_IP_DIRECT "10.98.32.1"
 #define SSP_IP_WIFI "10.98.33.1"
@@ -96,6 +99,9 @@ struct ssp_connection {
 
 	ffmpeg_decode adecoder;
 	uint32_t sample_size;
+	uint32_t audio_channels;
+	uint64_t decoded_video_frames;
+	uint64_t decoded_audio_frames;
 	AVCodecID aformat;
 	obs_source_audio audio;
 
@@ -172,6 +178,7 @@ static void ssp_on_video_data(struct imf::SspH264Data *video, ssp_connection *s)
 		}
 	}
 
+	const uint64_t decode_start_ns = os_gettime_ns();
 	long long ts = video->pts;
 	bool got_output;
 	bool success = ffmpeg_decode_video(&s->vdecoder, video->data, video->len, &ts, VIDEO_CS_DEFAULT,
@@ -185,11 +192,20 @@ static void ssp_on_video_data(struct imf::SspH264Data *video, ssp_connection *s)
 		if (s->sync_mode == PROP_SYNC_INTERNAL) {
 			s->frame.timestamp = os_gettime_ns();
 		} else {
-			s->frame.timestamp = (uint64_t)video->pts * 1000;
+			s->frame.timestamp = (uint64_t)ts * 1000;
 		}
 		//        if (flip)
 		//            frame.flip = !frame.flip;
+		const uint64_t decode_end_ns = os_gettime_ns();
 		obs_source_output_video2(s->source, &s->frame);
+		const uint64_t submit_end_ns = os_gettime_ns();
+		if (++s->decoded_video_frames == 1 || s->decoded_video_frames % 300 == 0)
+			ssp_blog(
+				LOG_INFO,
+				"Video decoded: %llu frames, %ux%u format=%d; decode-call=%.3f ms OBS-submit=%.3f ms (excludes capture/network/display)",
+				(unsigned long long)s->decoded_video_frames, s->frame.width, s->frame.height,
+				s->frame.format, (decode_end_ns - decode_start_ns) / 1000000.0,
+				(submit_end_ns - decode_end_ns) / 1000000.0);
 	}
 }
 
@@ -199,7 +215,10 @@ static void ssp_on_audio_data(struct imf::SspAudioData *audio, ssp_connection *s
 		return;
 	}
 	if (!ffmpeg_decode_valid(&s->adecoder)) {
-		if (ffmpeg_decode_init(&s->adecoder, s->aformat, false) < 0) {
+		if (s->aformat == AV_CODEC_ID_NONE)
+			return;
+		if (ffmpeg_decode_audio_init(&s->adecoder, s->aformat, s->audio.samples_per_sec, s->audio_channels) <
+		    0) {
 			ssp_blog(LOG_WARNING, "Could not initialize audio decoder");
 			return;
 		}
@@ -207,6 +226,8 @@ static void ssp_on_audio_data(struct imf::SspAudioData *audio, ssp_connection *s
 	uint8_t *data = audio->data;
 	size_t size = audio->len;
 	bool got_output = false;
+	uint64_t offset_frames = 0;
+	const uint64_t now_ns = os_gettime_ns();
 	do {
 		bool success = ffmpeg_decode_audio(&s->adecoder, data, size, &s->audio, &got_output);
 		if (!success) {
@@ -214,14 +235,13 @@ static void ssp_on_audio_data(struct imf::SspAudioData *audio, ssp_connection *s
 			return;
 		}
 		if (got_output) {
-			if (s->sync_mode == PROP_SYNC_INTERNAL) {
-				s->audio.timestamp = os_gettime_ns();
-				s->audio.timestamp +=
-					((uint64_t)s->audio.samples_per_sec * 1000000000ULL / (uint64_t)s->sample_size);
-			} else {
-				s->audio.timestamp = (uint64_t)audio->pts * 1000;
-			}
+			s->audio.timestamp = ssp_audio_timestamp_ns(s->sync_mode == PROP_SYNC_INTERNAL, audio->pts,
+								    now_ns, offset_frames, s->audio.samples_per_sec);
+			offset_frames += s->audio.frames;
 			obs_source_output_audio(s->source, &s->audio);
+			if (++s->decoded_audio_frames == 1)
+				ssp_blog(LOG_INFO, "Audio decoded: %u Hz, %u samples, format=%d speakers=%d",
+					 s->audio.samples_per_sec, s->audio.frames, s->audio.format, s->audio.speakers);
 		} else {
 			break;
 		}
@@ -247,7 +267,10 @@ static void ssp_on_meta_data(struct imf::SspVideoMeta *v, struct imf::SspAudioMe
 	s->frame.height = v->height;
 	s->sample_size = a->sample_size;
 	s->audio.samples_per_sec = a->sample_rate;
-	s->aformat = a->encoder == AUDIO_ENCODER_AAC ? AV_CODEC_ID_AAC : AV_CODEC_ID_NONE;
+	s->audio_channels = a->channel;
+	s->aformat = a->encoder == AUDIO_ENCODER_AAC   ? AV_CODEC_ID_AAC
+		     : a->encoder == AUDIO_ENCODER_PCM ? AV_CODEC_ID_PCM_S16LE
+						       : AV_CODEC_ID_NONE;
 }
 
 static void ssp_on_disconnected(ssp_connection *s)
@@ -437,6 +460,63 @@ const char *ssp_source_getname(void *data)
 	return obs_module_text("SSPPlugin.SSPSourceName");
 }
 
+static void read_camera_settings(ssp_source *s)
+{
+	s->cameraStatus->refreshAll([=](bool ok) {
+		obs_data_t *settings = obs_source_get_settings(s->source);
+		if (ok) {
+			obs_data_set_string(settings, PROP_RESOLUTION,
+					    s->cameraStatus->current_resolution.toUtf8().constData());
+			obs_data_set_string(settings, PROP_FRAME_RATE,
+					    s->cameraStatus->current_framerate.toUtf8().constData());
+			obs_data_set_string(settings, PROP_ENCODER,
+					    ssp_camera_encoder(s->cameraStatus->current_streamInfo.encoderType_)
+						    .toUtf8()
+						    .constData());
+			obs_data_set_int(settings, PROP_STREAM_INDEX,
+					 s->cameraStatus->current_stream == "Stream1" ? 1 : 0);
+			obs_data_set_int(settings, PROP_CAMERA_BITRATE, s->cameraStatus->current_streamInfo.bitrate_);
+		}
+		obs_data_set_string(settings, PROP_CAMERA_STATUS,
+				    ok ? "Camera settings read; playback never changes camera settings automatically."
+				       : "Camera controls unavailable; SSP playback can still connect.");
+		obs_data_release(settings);
+		obs_source_update_properties(s->source);
+	});
+}
+
+static bool read_camera_callback(obs_properties_t *, obs_property_t *, void *data)
+{
+	read_camera_settings(static_cast<ssp_source *>(data));
+	return false;
+}
+
+static bool apply_camera_callback(obs_properties_t *, obs_property_t *, void *data)
+{
+	auto s = static_cast<ssp_source *>(data);
+	ssp_stop(s);
+	obs_data_t *settings = obs_source_get_settings(s->source);
+	auto resolution = QString::fromUtf8(obs_data_get_string(settings, PROP_RESOLUTION));
+	auto fps = QString::fromUtf8(obs_data_get_string(settings, PROP_FRAME_RATE));
+	auto encoder = QString::fromUtf8(obs_data_get_string(settings, PROP_ENCODER));
+	int stream_index = (int)obs_data_get_int(settings, PROP_STREAM_INDEX);
+	int bitrate = (int)obs_data_get_int(settings, PROP_CAMERA_BITRATE);
+	obs_data_release(settings);
+	s->cameraStatus->setStream(
+		stream_index, resolution, false, fps, encoder, bitrate, [=](bool ok, QString reason) {
+			ssp_blog(ok ? LOG_INFO : LOG_WARNING, "Camera settings: %s", reason.toUtf8().constData());
+			obs_data_t *settings = obs_source_get_settings(s->source);
+			obs_data_set_string(settings, PROP_CAMERA_STATUS, reason.toUtf8().constData());
+			obs_data_release(settings);
+			ssp_start(s);
+			if (ok)
+				read_camera_settings(s);
+			else
+				obs_source_update_properties(s->source);
+		});
+	return false;
+}
+
 bool source_ip_modified(void *data, obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
 {
 	auto s = (struct ssp_source *)data;
@@ -454,12 +534,7 @@ bool source_ip_modified(void *data, obs_properties_t *props, obs_property_t *pro
 		return false;
 	}
 	s->cameraStatus->setIp(source_ip);
-	s->cameraStatus->refreshAll([=](bool ok) {
-		if (ok) {
-			s->ip_checked = true;
-		}
-		obs_source_update_properties(s->source);
-	});
+	read_camera_settings(s);
 	return false;
 }
 
@@ -481,12 +556,7 @@ static bool custom_ip_modify_callback(void *data, obs_properties_t *props, obs_p
 		return false;
 	}
 	s->cameraStatus->setIp(ip);
-	s->cameraStatus->refreshAll([=](bool ok) {
-		if (ok) {
-			s->ip_checked = true;
-		}
-		obs_source_update_properties(s->source);
-	});
+	read_camera_settings(s);
 
 	ssp_blog(LOG_INFO, "ip check queued.");
 	return false;
@@ -505,15 +575,13 @@ static bool resolution_modify_callback(void *data, obs_properties_t *props, obs_
 		return false;
 	}
 
-	auto resolution = obs_data_get_string(settings, PROP_RESOLUTION);
-	obs_property_list_add_string(framerates, "25 fps", "25");
-	obs_property_list_add_string(framerates, "30 fps", "29.97");
-	ssp_blog(LOG_INFO, "Camera model: %s", s->cameraStatus->model.toStdString().c_str());
-	if (strcmp(resolution, "1920*1080") != 0 ||
-	    !s->cameraStatus->model.contains(E2C_MODEL_CODE, Qt::CaseInsensitive)) {
-		obs_property_list_add_string(framerates, "50 fps", "50");
-		obs_property_list_add_string(framerates, "60 fps", "59.94");
-	}
+	auto resolution = ssp_camera_resolution(QString::fromUtf8(obs_data_get_string(settings, PROP_RESOLUTION)),
+						obs_data_get_bool(settings, PROP_LOW_NOISE));
+	QStringList fallback;
+	for (const auto &fps : s->cameraStatus->framerates)
+		fallback.append(fps);
+	for (const auto &fps : ssp_camera_frame_rates(s->cameraStatus->movie_formats, resolution, fallback))
+		obs_property_list_add_string(framerates, fps.toUtf8().constData(), fps.toUtf8().constData());
 	return true;
 }
 
@@ -533,7 +601,7 @@ obs_properties_t *ssp_source_getproperties(void *data)
 	auto s = (struct ssp_source *)data;
 
 	obs_properties_t *props = obs_properties_create();
-	obs_properties_set_flags(props, OBS_PROPERTIES_DEFER_UPDATE);
+	// Playback updates are safe immediately; camera writes require the Apply button.
 
 	obs_property_t *source_ip = obs_properties_add_list(props, PROP_SOURCE_IP,
 							    obs_module_text("SSPPlugin.SourceProps.SourceIp"),
@@ -601,19 +669,17 @@ obs_properties_t *ssp_source_getproperties(void *data)
 	obs_property_t *encoders = obs_properties_add_list(props, PROP_ENCODER,
 							   obs_module_text("SSPPlugin.SourceProps.Encoder"),
 							   OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(encoders, "H264", "H264");
-	obs_property_list_add_string(encoders, "H265", "H265");
+	for (const auto &encoder : s->cameraStatus->encoders)
+		obs_property_list_add_string(encoders, encoder.toUtf8().constData(), encoder.toUtf8().constData());
 
 	obs_properties_add_bool(props, PROP_EXP_WAIT_I, obs_module_text("SSPPlugin.SourceProps.WaitIFrame"));
 
 	obs_property_t *resolutions = obs_properties_add_list(props, PROP_RESOLUTION,
 							      obs_module_text("SSPPlugin.SourceProps.Resolution"),
 							      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(resolutions, "4K-UHD", "3840*2160");
-	obs_property_list_add_string(resolutions, "4K-DCI", "4096*2160");
-	obs_property_list_add_string(resolutions, "1080p", "1920*1080");
-
-	obs_properties_add_bool(props, PROP_LOW_NOISE, obs_module_text("SSPPlugin.SourceProps.LowNoise"));
+	for (const auto &resolution : s->cameraStatus->resolutions)
+		obs_property_list_add_string(resolutions, resolution.toUtf8().constData(),
+					     resolution.toUtf8().constData());
 
 	obs_property_set_modified_callback2(resolutions, resolution_modify_callback, data);
 
@@ -621,17 +687,27 @@ obs_properties_t *ssp_source_getproperties(void *data)
 							    obs_module_text("SSPPlugin.SourceProps.FrameRate"),
 							    OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 
-	obs_properties_add_int(props, PROP_BITRATE, obs_module_text("SSPPlugin.SourceProps.Bitrate"), 5, 300, 5);
+	obs_properties_add_int(props, PROP_CAMERA_BITRATE, obs_module_text("SSPPlugin.SourceProps.CameraBitrate"), 1,
+			       1000000, 1000);
+	auto stream = obs_properties_add_list(props, PROP_STREAM_INDEX,
+					      obs_module_text("SSPPlugin.SourceProps.StreamIndex"), OBS_COMBO_TYPE_LIST,
+					      OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(stream, "Stream0 (main)", 0);
+	obs_property_list_add_int(stream, "Stream1 (secondary)", 1);
+	obs_properties_add_text(props, PROP_CAMERA_STATUS, obs_module_text("SSPPlugin.SourceProps.CameraStatus"),
+				OBS_TEXT_INFO);
+	obs_properties_add_button2(props, "ssp_camera_read", obs_module_text("SSPPlugin.SourceProps.ReadCamera"),
+				   read_camera_callback, data);
+	obs_properties_add_button2(props, "ssp_camera_apply", obs_module_text("SSPPlugin.SourceProps.ApplyCamera"),
+				   apply_camera_callback, data);
 
 	obs_property_t *tally =
 		obs_properties_add_bool(props, PROP_LED_TALLY, obs_module_text("SSPPlugin.SourceProps.LedAsTally"));
 
-	if (s->cameraStatus->model.contains(IPMANS_MODEL_CODE, Qt::CaseInsensitive)) {
-		obs_property_set_visible(resolutions, false);
-		obs_property_set_visible(encoders, false);
-		obs_property_set_visible(framerate, false);
-		obs_property_set_visible(tally, false);
-	}
+	UNUSED_PARAMETER(resolutions);
+	UNUSED_PARAMETER(encoders);
+	UNUSED_PARAMETER(framerate);
+	UNUSED_PARAMETER(tally);
 
 	return props;
 }
@@ -655,7 +731,16 @@ void ssp_source_update(void *data, obs_data_t *settings)
 {
 	auto s = (struct ssp_source *)data;
 
-	const char *source_ip;
+	const char *source_ip = obs_data_get_string(settings, PROP_SOURCE_IP);
+	if (strcmp(source_ip, PROP_CUSTOM_VALUE) == 0)
+		source_ip = obs_data_get_string(settings, PROP_CUSTOM_SOURCE_IP);
+	obs_source_set_async_unbuffered(s->source, obs_data_get_int(settings, PROP_LATENCY) == PROP_LATENCY_LOW);
+	s->tally = obs_data_get_bool(settings, PROP_LED_TALLY);
+	if (s->conn && s->source_ip && strcmp(s->source_ip, source_ip) == 0 &&
+	    s->hwaccel == obs_data_get_bool(settings, PROP_HW_ACCEL) &&
+	    s->sync_mode == obs_data_get_int(settings, PROP_SYNC) &&
+	    s->wait_i_frame == obs_data_get_bool(settings, PROP_EXP_WAIT_I))
+		return;
 	ssp_stop(s);
 
 	s->hwaccel = obs_data_get_bool(settings, PROP_HW_ACCEL);
@@ -675,7 +760,10 @@ void ssp_source_update(void *data, obs_data_t *settings)
 	s->source_ip = strdup(source_ip);
 
 	// Set the IP of our camera from the configuration (used to build the url)
+	const bool camera_changed = s->cameraStatus->getIp() != s->source_ip;
 	s->cameraStatus->setIp(s->source_ip);
+	if (camera_changed)
+		read_camera_settings(s);
 
 	const bool is_unbuffered = (obs_data_get_int(settings, PROP_LATENCY) == PROP_LATENCY_LOW);
 	obs_source_set_async_unbuffered(s->source, is_unbuffered);
@@ -684,34 +772,8 @@ void ssp_source_update(void *data, obs_data_t *settings)
 
 	s->tally = obs_data_get_bool(settings, PROP_LED_TALLY);
 
-	auto encoder = obs_data_get_string(settings, PROP_ENCODER);
-	auto resolution = obs_data_get_string(settings, PROP_RESOLUTION);
-	auto low_noise = obs_data_get_bool(settings, PROP_LOW_NOISE);
-	auto framerate = obs_data_get_string(settings, PROP_FRAME_RATE);
-	auto bitrate = obs_data_get_int(settings, PROP_BITRATE);
-	auto nocheck = obs_data_get_bool(settings, PROP_NO_CHECK);
-
-	int stream_index;
-	if (strcmp(encoder, "H265") == 0) {
-		stream_index = 0;
-	} else {
-		stream_index = 1;
-	}
-
-	bitrate *= 1024 * 1024;
-
-	s->bitrate = bitrate;
-
-	ssp_blog(LOG_INFO, "Calling setStream on ssp source");
-	s->cameraStatus->setStream(stream_index, resolution, low_noise, framerate, bitrate, [=](bool ok, QString reason) {
-		if (!ok && !nocheck) {
-			blog(LOG_INFO, "%s",
-			     QString("setStream failed, not starting ssp: %1").arg(reason).toStdString().c_str());
-			return;
-		}
-		ssp_blog(LOG_INFO, "Set stream succeeded, starting ssp");
-		ssp_start(s);
-	});
+	s->bitrate = (int)obs_data_get_int(settings, PROP_BITRATE) * 1000000;
+	ssp_start(s);
 }
 
 void ssp_source_shown(void *data)

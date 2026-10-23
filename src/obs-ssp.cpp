@@ -28,6 +28,7 @@ along with this program; If not, see <https://www.gnu.org/licenses/>
 #include <QDir>
 #include "obs-ssp.h"
 #include "ssp-controller.h"
+#include "ffmpeg-decode.h"
 
 #if defined(__APPLE__)
 
@@ -46,9 +47,12 @@ create_loop_class_ptr create_loop_class;
 
 bool obs_module_load(void)
 {
-	ssp_blog(LOG_INFO, "hello ! (obs-ssp version %s) size: %lu",
-		 PLUGIN_VERSION, sizeof(ssp_source_info));
+	ssp_blog(LOG_INFO, "hello ! (obs-ssp version %s) size: %lu", PLUGIN_VERSION, sizeof(ssp_source_info));
 
+	if (!ffmpeg_decode_compatible()) {
+		ssp_blog(LOG_ERROR, "Incompatible FFmpeg runtime; rebuild obs-ssp for this OBS version.");
+		return false;
+	}
 	create_mdns_loop();
 	ssp_source_info = create_ssp_source_info();
 	obs_register_source(&ssp_source_info);

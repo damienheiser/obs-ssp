@@ -23,6 +23,7 @@ along with this program; If not, see <https://www.gnu.org/licenses/>
 VFrameQueue::VFrameQueue()
 {
 	maxTime = 0;
+	running = false;
 }
 
 void VFrameQueue::start()
@@ -36,6 +37,9 @@ void VFrameQueue::stop()
 	running = false;
 	sem.release();
 	pthread_join(thread, nullptr);
+	QMutexLocker locker(&queueLock);
+	while (!frameQueue.empty())
+		free(frameQueue.dequeue().data.data);
 }
 
 void VFrameQueue::setFrameCallback(VFrameQueue::CallbackFunc cb)
@@ -66,49 +70,20 @@ void *VFrameQueue::pthread_run(void *q)
 
 void VFrameQueue::run(VFrameQueue *q)
 {
-	Frame current;
-	uint64_t lastFrameTime = 0, lastStartTime = 0, processingTime = 0;
-	q->sem.acquire();
-	q->queueLock.lock();
-	if (q->frameQueue.empty()) {
-		q->queueLock.unlock();
-		return;
-	}
-	current = q->frameQueue.dequeue();
-	q->queueLock.unlock();
-	lastStartTime = os_gettime_ns() / 1000;
-	q->callback(&current.data);
-	lastFrameTime = current.time;
-	processingTime = os_gettime_ns() / 1000 - lastStartTime;
-	free((void *)current.data.data);
+	// Encoded access units must reach the decoder in receive order. Reordered PTS
+	// are valid for B frames; dropping compressed references corrupts later frames.
 	while (q->running) {
 		q->sem.acquire();
+		if (!q->running)
+			break;
 		q->queueLock.lock();
 		if (q->frameQueue.empty()) {
 			q->queueLock.unlock();
 			continue;
 		}
-		current = q->frameQueue.dequeue();
+		Frame current = q->frameQueue.dequeue();
 		q->queueLock.unlock();
-		if (current.time < lastFrameTime) {
-			free((void *)current.data.data);
-			continue;
-		}
-		if (current.noDrop) {
-			lastStartTime = os_gettime_ns() / 1000;
-			q->callback(&current.data);
-			lastFrameTime = current.time;
-			processingTime = os_gettime_ns() / 1000 - lastStartTime;
-		} else if (current.time - lastFrameTime + 15000 >
-			   processingTime) {
-			lastStartTime = os_gettime_ns() / 1000;
-			q->callback(&current.data);
-			lastFrameTime = current.time;
-			processingTime = os_gettime_ns() / 1000 - lastStartTime;
-		} else {
-			qDebug() << "dropped" << current.time - lastFrameTime
-				 << processingTime;
-		} // else we drop the frame
-		free((void *)current.data.data);
+		q->callback(&current.data);
+		free(current.data.data);
 	}
 }
