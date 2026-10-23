@@ -9,3 +9,7 @@ Delivery: branch `fix/macos-local-configure` for `damienheiser/obs-ssp`. Author 
 Asana: https://app.asana.com/1/1198722117693833/project/1198722117693841/task/1219836346553340
 
 Recovery: revert the focused fix commit. Original operator checkout and caches are protected; agent validation checkout and build log are retained for inspection. No temporary worktrees were created.
+
+## Local installation — 2026-10-23
+
+Installed the validated universal libssp-based build into `/Users/hedon/Library/Application Support/obs-studio/plugins/obs-ssp.plugin` using CMake staging, including `Contents/MacOS/ssp-connector` and `Contents/Frameworks/libssp.dylib`. Ad-hoc signed the assembled bundle and verified its signature. No existing obs-ssp installation was present; the Canon plugin was preserved. Operator stopped OBS; restarted OBS 32.2.2 through computer use. Startup log `2026-10-23 14-53-00.txt` reports obs-ssp 0.13.0 loaded and mDNS query thread started. Observed SSP Source in Add Source. Camera connection/audio/video remain untested; next action is to add SSP Source and connect the camera. Rollback: quit OBS and move this plugin bundle outside the plugins directory. Agent staging and validation artifacts retained; no worktrees created or removed.
