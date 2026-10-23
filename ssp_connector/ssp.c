@@ -429,8 +429,8 @@ static int do_start_stream(ssp_client_t *c)
 {
 	uint8_t start_pkt[9];
 	start_pkt[0] = SSP_PKT_STREAM_START;
-	write_be32(start_pkt + 1, c->stream_style);
-	write_be32(start_pkt + 5, 0);
+	write_be32(start_pkt + 1, 1);
+	write_be32(start_pkt + 5, c->stream_style);
 
 	if (ssp_send_packet(c, start_pkt, sizeof(start_pkt)) < 0) {
 		ssp_log("failed to send STREAM_START");
@@ -502,6 +502,27 @@ static void handle_metadata(ssp_client_t *c, const uint8_t *pkt, uint32_t pkt_le
 		c->callbacks.on_metadata(md, c->callbacks.userdata);
 }
 
+/* E2C captures contain a 20-byte optional extension. The second word is
+ * observed as 16; its semantics are unknown. Keep legacy media verbatim. */
+static bool media_payload(const uint8_t *pkt, uint32_t len, uint32_t base, const uint8_t **data, size_t *size)
+{
+	if (len <= base)
+		return false;
+	const uint8_t *p = pkt + base;
+	uint32_t remaining = len - base;
+	if (remaining >= 8 && read_be32(p + 4) == 16 && read_be32(p) <= 256) {
+		if (read_be32(p) != 20 || remaining <= 20) {
+			ssp_log("invalid media extension length");
+			return false;
+		}
+		p += 20;
+		remaining -= 20;
+	}
+	*data = p;
+	*size = remaining;
+	return true;
+}
+
 static void handle_video(ssp_client_t *c, const uint8_t *pkt, uint32_t pkt_len)
 {
 	if (pkt_len < 17) {
@@ -513,8 +534,8 @@ static void handle_video(ssp_client_t *c, const uint8_t *pkt, uint32_t pkt_len)
 	frame.pts = read_be64(pkt + 1);
 	frame.frame_type = read_be32(pkt + 9);
 	frame.frame_number = read_be32(pkt + 13);
-	frame.data = pkt + 17;
-	frame.data_len = pkt_len - 17;
+	if (!media_payload(pkt, pkt_len, 17, &frame.data, &frame.data_len))
+		return;
 
 	if (c->callbacks.on_video)
 		c->callbacks.on_video(&frame, c->callbacks.userdata);
@@ -529,8 +550,8 @@ static void handle_audio(ssp_client_t *c, const uint8_t *pkt, uint32_t pkt_len)
 
 	ssp_audio_frame_t frame;
 	frame.pts = read_be64(pkt + 1);
-	frame.data = pkt + 9;
-	frame.data_len = pkt_len - 9;
+	if (!media_payload(pkt, pkt_len, 9, &frame.data, &frame.data_len))
+		return;
 
 	if (c->callbacks.on_audio)
 		c->callbacks.on_audio(&frame, c->callbacks.userdata);

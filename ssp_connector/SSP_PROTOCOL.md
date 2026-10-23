@@ -93,8 +93,8 @@ Total: 44 bytes (sent raw, NOT length-prefixed)
 Offset  Size  Description
 ──────  ────  ───────────────────
 0       1     Type (0xCA)
-1-4     4     Stream style (BE32): 0=default, 1=main, 2=secondary
-5-8     4     Reserved (0x00000000)
+1-4     4     Enable (BE32): 1
+5-8     4     Stream selector (BE32): 0=default, 1=main, 2=secondary
 ```
 
 Total: 9 bytes (length-prefixed)
@@ -149,10 +149,10 @@ Total: 77 bytes
 Offset  Size  Description
 ──────  ────  ───────────────────
 0       1     Type (0x6F)
-1-8     8     PTS (BE64)
+1-8     8     PTS in microseconds (BE64)
 9-12    4     Frame type (BE32): 5=IDR, 1=P
 13-16   4     Frame number (BE32)
-17+     var   NAL data (starts with 00 00 00 01 start code)
+17+     var   Optional extension, then Annex B NAL data
 ```
 
 Frame type values:
@@ -165,9 +165,22 @@ Frame type values:
 Offset  Size  Description
 ──────  ────  ───────────────────
 0       1     Type (0x70)
-1-8     8     PTS (BE64)
-9+      var   Audio data (AAC ADTS: starts with 0xFFF1 sync)
+1-8     8     PTS in microseconds (BE64)
+9+      var   Optional extension, then AAC ADTS or PCM S16LE data
 ```
+
+### Observed E2C media extension
+
+Real E2C1.0.0 captures contain a 20-byte extension after both media base headers.
+Its first BE32 is 20, including its own length field. The second BE32 is 16;
+its meaning is not established. Twelve further bytes precede the media, so video
+payload starts at byte 37 and audio at byte 29 when this extension is present.
+Legacy packets without the extension remain supported. Recognized malformed or
+truncated extensions are rejected; unknown extension layouts must not be guessed.
+
+Both audio and video wire PTS use microseconds. Metadata timescale/unit describes
+cadence and does not change this wire timebase. PCM sample_size 2048 describes a
+block size, not a bit depth; observed codec 23 carries stereo 48 kHz PCM S16LE.
 
 ## Heartbeat
 
