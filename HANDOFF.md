@@ -23,3 +23,5 @@ Log sources20-31-42 (initial),20-37-02(selector),20-41-17(finalsecondary),20-44-
 ## Independent incident blocker
 
 Earlier unrelated saved RTSP credential reached a transcript through insufficiently filtered log output. Operator rotation remains required: rotate camera account, update consumers, verify old rejection/new success. No secret value here. Metadata incident /Users/agent-codex/obs-ssp-diagnostics/credential-exposure-20261023.md; task1219837730457886. Future reads whitelist SSP and redact URL credentials before output. Public fixed SSP protocol constants are not a new private-credential incident.
+
+Wiki documentation accounting: create API reported success for engineering/obs-ssp/native-obs-validation, but readback returned PageViewForbidden and search reported a different numeric ID. Publication content could not be independently verified; do not call it verified. Agent-codex credential read access needs operator/wiki-admin repair. Finished local draft and safe update/recheck script queued under /Users/agent-codex/obs-ssp-diagnostics/wiki-queue; source docs remain committed.
