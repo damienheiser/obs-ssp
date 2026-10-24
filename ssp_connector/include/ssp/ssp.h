@@ -59,7 +59,7 @@ typedef struct ssp_audio_meta {
 	uint32_t sample_rate; /* e.g. 48000 */
 	uint32_t unit;        /* e.g. 1024 (samples per frame) */
 	uint32_t timescale;   /* e.g. 48000 */
-	uint32_t sample_size; /* e.g. 2048 */
+	uint32_t sample_size; /* Block size, e.g. 2048; not PCM bit depth */
 	uint32_t channel;     /* e.g. 2 (stereo) */
 	uint32_t bitrate;     /* e.g. 128000 bps */
 	uint32_t encoder;     /* SSP_ENCODER_AAC or SSP_ENCODER_PCM */
@@ -81,7 +81,7 @@ typedef struct ssp_metadata {
 
 /** Video frame */
 typedef struct ssp_video_frame {
-	uint64_t pts;
+	uint64_t pts;        /* Wire timestamp in microseconds; independent of cadence timescale */
 	uint32_t frame_type; /* 5 = IDR/I-frame, 1 = P-frame */
 	uint32_t frame_number;
 	const uint8_t *data; /* H.264/H.265 NAL units (starts with 00 00 00 01) */
@@ -90,7 +90,7 @@ typedef struct ssp_video_frame {
 
 /** Audio frame */
 typedef struct ssp_audio_frame {
-	uint64_t pts;
+	uint64_t pts;        /* Wire timestamp in microseconds; independent of cadence timescale */
 	const uint8_t *data; /* AAC ADTS (starts with 0xFFF sync) or PCM */
 	size_t data_len;
 } ssp_audio_frame_t;

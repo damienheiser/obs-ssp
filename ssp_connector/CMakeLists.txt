@@ -12,6 +12,8 @@ if(USE_NATIVE_SSP OR OS_LINUX)
   target_include_directories(ssp_client PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/include)
   if(OS_WINDOWS OR WIN32)
     target_link_libraries(ssp_client PUBLIC bcrypt ws2_32)
+  elseif(APPLE)
+    # CommonCrypto is provided by the system for both macOS architectures.
   else()
     find_package(OpenSSL REQUIRED COMPONENTS Crypto)
     target_link_libraries(ssp_client PUBLIC OpenSSL::Crypto)
@@ -34,6 +36,24 @@ if(USE_NATIVE_SSP OR OS_LINUX)
     target_link_libraries(test-ssp PRIVATE ssp_client)
     enable_testing()
     add_test(NAME ssp-unit COMMAND test-ssp)
+    # Compile the production implementation in the test translation unit so
+    # regression checks exercise its actual serializer and packet handlers.
+    if(NOT WIN32)
+      add_executable(test-ssp-observed test_ssp_observed.c)
+      target_compile_features(test-ssp-observed PRIVATE c_std_17)
+      if(NOT APPLE)
+        target_link_libraries(test-ssp-observed PRIVATE OpenSSL::Crypto)
+      endif()
+      add_test(NAME ssp-stream-selector COMMAND test-ssp-observed)
+      set(SSP_TEST_VIDEO_CAPTURE "" CACHE FILEPATH "Private real SSP video packet for optional parser check")
+      set(SSP_TEST_AUDIO_CAPTURE "" CACHE FILEPATH "Private real SSP audio packet for optional parser check")
+      if(EXISTS "${SSP_TEST_VIDEO_CAPTURE}" AND EXISTS "${SSP_TEST_AUDIO_CAPTURE}")
+        add_test(
+          NAME ssp-observed-media
+          COMMAND test-ssp-observed "${SSP_TEST_VIDEO_CAPTURE}" "${SSP_TEST_AUDIO_CAPTURE}"
+        )
+      endif()
+    endif()
     find_package(Threads REQUIRED)
     add_executable(test-ssp-stop test_ssp_stop.c)
     target_link_libraries(test-ssp-stop PRIVATE ssp_client Threads::Threads)

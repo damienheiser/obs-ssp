@@ -54,6 +54,8 @@ public:
 	QStringList encoders;
 	QString current_encoder;
 	QString current_stream;
+	QString selected_stream;
+	QStringList reported_streams;
 	QMap<QString, CameraConfigInfo> imaging;
 	void readImaging(StatusUpdateCallback cb);
 	void applyImaging(QMap<QString, QString> desired, StatusReasonUpdateCallback cb);

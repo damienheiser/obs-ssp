@@ -81,14 +81,16 @@ void CameraStatus::getFramerate(const StatusUpdateCallback &callback)
 
 void CameraStatus::getCurrentStream(const StatusUpdateCallback &callback)
 {
+	reported_streams.clear();
 	controller->getCameraConfig(CONFIG_KEY_SEND_STREAM, [=](HttpResponse *rsp) {
-		if (rsp->statusCode == 999) {
+		if (rsp->statusCode != 200 || rsp->code != 0) {
 			callback(false);
 			return false;
 		}
-		current_stream = rsp->currentValue;
-		controller->getStreamInfo(rsp->currentValue.toLower(), [=](HttpResponse *rsp) {
-			if (rsp->statusCode == 999) {
+		reported_streams = ssp_reported_camera_streams(rsp->choices);
+		current_stream = reported_streams.contains(selected_stream) ? selected_stream : rsp->currentValue;
+		controller->getStreamInfo(current_stream.toLower(), [=](HttpResponse *rsp) {
+			if (rsp->statusCode != 200 || rsp->code != 0) {
 				callback(false);
 				return false;
 			}

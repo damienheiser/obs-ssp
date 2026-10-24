@@ -40,7 +40,7 @@ class SSPClientIso : public QObject {
 	Q_OBJECT
 
 public:
-	SSPClientIso(const std::string &ip, uint32_t bufferSize);
+	SSPClientIso(const std::string &ip, uint32_t bufferSize, uint32_t streamStyle = 0);
 
 	virtual void setOnRecvBufferFullCallback(const imf::OnRecvBufferFullCallback &cb);
 	virtual void setOnH264DataCallback(const imf::OnH264DataCallback &cb);
@@ -71,6 +71,7 @@ private:
 	std::atomic_bool running;
 	std::string ip;
 	uint32_t bufferSize;
+	uint32_t streamStyle;
 	QString ssp_connector_path;
 
 	os_process_pipe_t *pipe;

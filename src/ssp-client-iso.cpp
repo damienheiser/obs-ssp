@@ -105,10 +105,11 @@ static void *dump_stderr(os_process_pipe *pipe)
 	return nullptr;
 }
 
-SSPClientIso::SSPClientIso(const std::string &ip, uint32_t bufferSize)
+SSPClientIso::SSPClientIso(const std::string &ip, uint32_t bufferSize, uint32_t streamStyle)
 {
 	this->ip = ip;
 	this->bufferSize = bufferSize;
+	this->streamStyle = streamStyle;
 	this->running = false;
 	this->pipe = nullptr;
 
@@ -135,6 +136,12 @@ void SSPClientIso::doStart()
 	os_process_args_add_arg(args, this->ip.c_str());
 	os_process_args_add_arg(args, "--port");
 	os_process_args_add_arg(args, "9999");
+#ifdef SSP_NATIVE_CONNECTOR
+	os_process_args_add_arg(args, "--stream");
+	const auto selector = std::to_string(streamStyle);
+	os_process_args_add_arg(args, selector.c_str());
+	ssp_blog(LOG_INFO, "SSP receive stream selector: %u", streamStyle);
+#endif
 	auto tpipe = os_process_pipe_create2(args, "r");
 	os_process_args_destroy(args);
 	blog(LOG_INFO, "Start ssp-connector at: %s", executable.c_str());

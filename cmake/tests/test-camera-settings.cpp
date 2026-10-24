@@ -24,5 +24,13 @@ int main()
 	assert(ssp_audio_timestamp_ns(true, 1234, 5000000000ULL, 0, 48000) == 5000000000ULL);
 	assert(ssp_audio_timestamp_ns(false, 1234, 5000000000ULL, 0, 48000) == 1234000ULL);
 	assert(ssp_audio_timestamp_ns(true, 1234, 5000000000ULL, 1024, 48000) == 5021333333ULL);
-	puts("camera choices, legacy settings and audio timestamps passed");
+	assert(ssp_reported_camera_streams({"Stream0", "Stream1", "FutureStream"}) ==
+	       QStringList({"Stream0", "Stream1"}));
+	assert(ssp_reported_camera_streams({}).isEmpty());
+	assert(ssp_reported_camera_streams({"Stream1"}) == QStringList({"Stream1"}));
+	assert(ssp_camera_stream_selector(0) == 1);
+	assert(ssp_camera_stream_selector(1) == 2);
+	assert(ssp_camera_stream_selector(-1) == 0);
+	assert(ssp_camera_stream_selector(99) == 0);
+	puts("camera choices, stream selectors and audio timestamps passed");
 }

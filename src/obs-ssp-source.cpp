@@ -124,6 +124,7 @@ struct ssp_connection {
 	int bitrate;
 	int wait_i_frame;
 	int sync_mode;
+	uint32_t stream_style;
 	obs_source_t *source;
 	// not used
 	int video_range;
@@ -136,6 +137,7 @@ struct ssp_source {
 	CameraStatus *cameraStatus;
 
 	int sync_mode;
+	uint32_t stream_style;
 	int video_range;
 	int hwaccel;
 	int bitrate;
@@ -325,6 +327,7 @@ static void ssp_start(ssp_source *s)
 	conn->hwaccel = s->hwaccel;
 	conn->bitrate = s->bitrate;
 	conn->sync_mode = s->sync_mode;
+	conn->stream_style = s->stream_style;
 	conn->video_range = s->video_range;
 	pthread_mutex_init(&conn->lck, nullptr);
 
@@ -390,7 +393,7 @@ static void ssp_conn_start(ssp_connection *s)
 		return;
 	}
 	pthread_mutex_lock(&s->lck);
-	s->client = new SSPClientIso(ip, s->bitrate / 8);
+	s->client = new SSPClientIso(ip, s->bitrate / 8, s->stream_style);
 	s->client->setOnH264DataCallback(std::bind(ssp_video_data_enqueue, _1, s));
 	s->client->setOnAudioDataCallback(std::bind(ssp_on_audio_data, _1, s));
 	s->client->setOnMetaCallback(std::bind(ssp_on_meta_data, _1, _2, _3, s));
@@ -452,7 +455,7 @@ void *thread_ssp_reconnect(void *data)
 		pthread_mutex_unlock(&conn->lck);
 		return nullptr;
 	}
-	conn->client = new SSPClientIso(ip, conn->bitrate / 8);
+	conn->client = new SSPClientIso(ip, conn->bitrate / 8, conn->stream_style);
 	conn->client->setOnH264DataCallback(std::bind(ssp_video_data_enqueue, _1, conn));
 	conn->client->setOnAudioDataCallback(std::bind(ssp_on_audio_data, _1, conn));
 	conn->client->setOnMetaCallback(std::bind(ssp_on_meta_data, _1, _2, _3, conn));
@@ -844,14 +847,16 @@ obs_properties_t *ssp_source_getproperties(void *data)
 	for (const auto &encoder : s->cameraStatus->encoders)
 		obs_property_list_add_string(encoders, encoder.toUtf8().constData(), encoder.toUtf8().constData());
 
-	auto depth = obs_properties_add_list(props, PROP_BIT_DEPTH, "H.265 bit depth", OBS_COMBO_TYPE_LIST,
+	auto depth = obs_properties_add_list(props, PROP_BIT_DEPTH, "Reported stream bit depth", OBS_COMBO_TYPE_LIST,
 					     OBS_COMBO_FORMAT_STRING);
-	obs_property_list_add_string(depth, "8-bit", "8bit");
-	obs_property_list_add_string(depth, "10-bit", "10bit");
-	obs_property_set_enabled(depth, s->paused);
+	const auto reported_depth = s->cameraStatus->current_streamInfo.bitWidth_.toUtf8();
+	if (!reported_depth.isEmpty())
+		obs_property_list_add_string(depth, reported_depth.constData(), reported_depth.constData());
+	obs_property_set_enabled(depth, false);
+	obs_property_set_visible(depth, !reported_depth.isEmpty());
 	obs_property_set_long_description(
 		depth,
-		"Pause streaming, choose H.265 and bit depth, then Apply. The camera must accept and report the selected depth.");
+		"Current selected-stream depth reported by the camera. Alternate depths require advertised capabilities.");
 	obs_properties_add_bool(props, PROP_EXP_WAIT_I, obs_module_text("SSPPlugin.SourceProps.WaitIFrame"));
 
 	obs_property_t *resolutions = obs_properties_add_list(props, PROP_RESOLUTION,
@@ -872,8 +877,9 @@ obs_properties_t *ssp_source_getproperties(void *data)
 	auto stream = obs_properties_add_list(props, PROP_STREAM_INDEX,
 					      obs_module_text("SSPPlugin.SourceProps.StreamIndex"), OBS_COMBO_TYPE_LIST,
 					      OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(stream, "Stream0 (main)", 0);
-	obs_property_list_add_int(stream, "Stream1 (secondary)", 1);
+	for (const auto &reported : s->cameraStatus->reported_streams)
+		obs_property_list_add_int(stream, reported.toUtf8().constData(), reported == "Stream0" ? 0 : 1);
+	obs_property_set_visible(stream, !s->cameraStatus->reported_streams.isEmpty());
 	obs_properties_add_text(props, PROP_CAMERA_STATUS, obs_module_text("SSPPlugin.SourceProps.CameraStatus"),
 				OBS_TEXT_INFO);
 	obs_properties_add_button2(props, "ssp_camera_pause", "Pause SSP for camera controls", pause_camera_callback,
@@ -965,13 +971,18 @@ void ssp_source_update(void *data, obs_data_t *settings)
 	if (s->conn && s->source_ip && strcmp(s->source_ip, source_ip) == 0 &&
 	    s->hwaccel == obs_data_get_bool(settings, PROP_HW_ACCEL) &&
 	    s->sync_mode == obs_data_get_int(settings, PROP_SYNC) &&
-	    s->wait_i_frame == obs_data_get_bool(settings, PROP_EXP_WAIT_I))
+	    s->wait_i_frame == obs_data_get_bool(settings, PROP_EXP_WAIT_I) &&
+	    s->stream_style == ssp_camera_stream_selector(obs_data_get_int(settings, PROP_STREAM_INDEX)))
 		return;
 	ssp_stop(s);
 
 	s->hwaccel = obs_data_get_bool(settings, PROP_HW_ACCEL);
 
 	s->sync_mode = (int)obs_data_get_int(settings, PROP_SYNC);
+	const auto selected_stream = QString("Stream%1").arg(obs_data_get_int(settings, PROP_STREAM_INDEX));
+	const bool stream_changed = s->cameraStatus->selected_stream != selected_stream;
+	s->cameraStatus->selected_stream = selected_stream;
+	s->stream_style = ssp_camera_stream_selector(obs_data_get_int(settings, PROP_STREAM_INDEX));
 	source_ip = obs_data_get_string(settings, PROP_SOURCE_IP);
 	if (strcmp(source_ip, PROP_CUSTOM_VALUE) == 0) {
 		source_ip = obs_data_get_string(settings, PROP_CUSTOM_SOURCE_IP);
@@ -988,7 +999,7 @@ void ssp_source_update(void *data, obs_data_t *settings)
 	// Set the IP of our camera from the configuration (used to build the url)
 	const bool camera_changed = s->cameraStatus->getIp() != s->source_ip;
 	s->cameraStatus->setIp(s->source_ip);
-	if (camera_changed)
+	if (camera_changed || stream_changed)
 		read_camera_settings(s);
 
 	const bool is_unbuffered = (obs_data_get_int(settings, PROP_LATENCY) == PROP_LATENCY_LOW);

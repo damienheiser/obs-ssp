@@ -57,3 +57,18 @@ inline uint64_t ssp_audio_timestamp_ns(bool internal, uint64_t pts_us, uint64_t 
 {
 	return (internal ? now_ns : pts_us * 1000) + (sample_rate ? offset_frames * 1000000000ULL / sample_rate : 0);
 }
+
+// Camera stream indices and SSP wire selectors use different numbering.
+inline uint32_t ssp_camera_stream_selector(int64_t index)
+{
+	return index == 0 ? 1 : index == 1 ? 2 : 0;
+}
+
+inline QStringList ssp_reported_camera_streams(const QStringList &reported)
+{
+	QStringList result;
+	for (const auto &name : reported)
+		if ((name == "Stream0" || name == "Stream1") && !result.contains(name))
+			result.append(name);
+	return result;
+}
