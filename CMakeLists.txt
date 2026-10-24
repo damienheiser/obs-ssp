@@ -166,7 +166,7 @@ if(SSP_BUILD_TESTS)
 
   add_executable(test-ssp-plan cmake/tests/test-ssp-plan.cpp)
   target_include_directories(test-ssp-plan PRIVATE src)
-  target_link_libraries(test-ssp-plan PRIVATE OBS::libobs)
+  target_link_libraries(test-ssp-plan PRIVATE OBS::libobs FFmpeg::avutil)
   add_test(NAME ssp-peer-plan COMMAND test-ssp-plan)
 
   add_executable(test-peer-adversary cmake/tests/test-peer-adversary.cpp src/ssp-peer.cpp)

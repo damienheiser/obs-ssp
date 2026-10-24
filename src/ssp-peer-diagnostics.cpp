@@ -51,9 +51,11 @@ struct Test : QObject {
 	QString state = "Ready: test uses private OBS views and generated tones, not camera media.";
 	QTimer timer;
 	bool running = false;
+	bool main10 = false;
 	unsigned ticks = 0;
 	QString failure;
-	obs_view_t *view = nullptr;
+	obs_view_t *view = nullptr, *eight_bit_view = nullptr;
+	video_t *eight_bit_video = nullptr;
 	video_t *video = nullptr;
 	audio_t *private_audio = nullptr;
 	uint64_t sample_cursor = 0;
@@ -150,6 +152,13 @@ struct Test : QObject {
 			audio_output_close(private_audio);
 			private_audio = nullptr;
 		}
+		if (eight_bit_view) {
+			obs_view_remove(eight_bit_view);
+			obs_view_set_source(eight_bit_view, 0, nullptr);
+			obs_view_destroy(eight_bit_view);
+			eight_bit_view = nullptr;
+			eight_bit_video = nullptr;
+		}
 		if (view) {
 			obs_view_remove(view);
 			obs_view_set_source(view, 0, nullptr);
@@ -217,7 +226,11 @@ struct Test : QObject {
 			return;
 		info.base_width = info.output_width = 320;
 		info.base_height = info.output_height = 180;
-		info.output_format = VIDEO_FORMAT_NV12;
+		info.output_format = main10 ? VIDEO_FORMAT_P010 : VIDEO_FORMAT_NV12;
+		if (main10) {
+			info.fps_num = 30000;
+			info.fps_den = 1001;
+		}
 		info.colorspace = VIDEO_CS_709;
 		info.range = VIDEO_RANGE_PARTIAL;
 		info.gpu_conversion = true;
@@ -250,7 +263,18 @@ struct Test : QObject {
 		video = obs_view_add2(view, &info);
 		if (!check(video != nullptr, "Private video renderer unavailable"))
 			return;
-		for (int i = 0; i < 1; ++i) {
+		if (main10) {
+			eight_bit_view = obs_view_create();
+			if (!check(eight_bit_view != nullptr, "Independent 8-bit view unavailable"))
+				return;
+			obs_view_set_source(eight_bit_view, 0, obs_scene_get_source(scene));
+			auto eight_info = info;
+			eight_info.output_format = VIDEO_FORMAT_NV12;
+			eight_bit_video = obs_view_add2(eight_bit_view, &eight_info);
+			if (!check(eight_bit_video != nullptr, "Independent NV12 renderer unavailable"))
+				return;
+		}
+		for (int i = 0; i < (main10 ? 2 : 1); ++i) {
 			settings = obs_data_create();
 			obs_data_set_int(settings, "bitrate", 600);
 			obs_data_set_string(settings, "rate_control", "CBR");
@@ -258,12 +282,31 @@ struct Test : QObject {
 			obs_data_set_string(settings, "tune", "zerolatency");
 			obs_data_set_int(settings, "keyint_sec", 1);
 			obs_data_set_string(settings, "x264opts", "bframes=0");
+			const char *encoder_id = "obs_x264";
+			if (main10 && i == 0) {
+				encoder_id = nullptr;
+				const char *candidate = nullptr;
+				for (size_t n = 0; obs_enum_encoder_types(n, &candidate); ++n)
+					if (QString::fromUtf8(candidate).contains("ave.hevc") &&
+					    !strcmp(obs_get_encoder_codec(candidate), "hevc")) {
+						encoder_id = candidate;
+						break;
+					}
+				if (!check(encoder_id != nullptr, "Actual Apple HEVC encoder unavailable")) {
+					obs_data_release(settings);
+					return;
+				}
+				obs_data_set_string(settings, "profile", "main10");
+				obs_data_set_bool(settings, "bframes", false);
+			}
 			video_encoders[i] = obs_video_encoder_create(
-				"obs_x264", i ? "peer video half-rate" : "peer video full-rate", settings, nullptr);
+				encoder_id, i ? "peer video half-rate" : "peer video full-rate", settings, nullptr);
 			obs_data_release(settings);
 			if (!check(video_encoders[i] != nullptr, "Actual x264 encoder unavailable"))
 				return;
-			obs_encoder_set_video(video_encoders[i], video);
+			obs_encoder_set_video(video_encoders[i], main10 && i ? eight_bit_video : video);
+			if (main10 && i)
+				obs_encoder_set_preferred_video_format(video_encoders[i], VIDEO_FORMAT_NV12);
 			if (i) {
 				obs_encoder_set_scaled_size(video_encoders[i], 160, 90);
 				if (!check(obs_encoder_set_frame_rate_divisor(video_encoders[i], 2),
@@ -298,7 +341,7 @@ struct Test : QObject {
 		if (!check(output && service, "SSP output/service registration missing"))
 			return;
 		obs_output_set_service(output, service);
-		for (int i = 0; i < 1; ++i) {
+		for (int i = 0; i < (main10 ? 2 : 1); ++i) {
 			obs_output_set_video_encoder2(output, video_encoders[i], i);
 			obs_output_set_audio_encoder(output, audio_encoders[i], i);
 		}
@@ -336,6 +379,7 @@ struct Test : QObject {
 		calldata_t data;
 		calldata_init(&data);
 		proc_handler_call(obs_source_get_proc_handler(receiver), "get_ssp_peer_status", &data);
+		result["video_format"] = (int)calldata_int(&data, "video_format");
 		result["video_frames"] = qint64(calldata_int(&data, "video_frames"));
 		result["audio_frames"] = qint64(calldata_int(&data, "audio_frames"));
 		result["errors"] = qint64(calldata_int(&data, "errors"));
@@ -427,6 +471,13 @@ struct Test : QObject {
 		obs_websocket_request_response_free(response);
 		report["websocket_stop_output"] = ws_stop;
 		passed &= ws_stop;
+		if (main10) {
+			auto format = results[0].toObject()["video_format"].toInt();
+			bool depth = format == VIDEO_FORMAT_I010 || format == VIDEO_FORMAT_P010;
+			report["hevc_10bit_decoded"] = depth;
+			passed &= depth;
+		}
+		report["mode"] = main10 ? "mixed-hevc-main10-avc" : "service-generated-avc";
 		report["passed"] = passed;
 		auto path = QString("/Users/Shared/obs-ssp-peer-%1.json")
 				    .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
@@ -454,8 +505,9 @@ void register_ssp_peer_diagnostics()
 	info.get_name = [](void *) {
 		return "SSP Transport Acceptance Test (diagnostic)";
 	};
-	info.create = [](obs_data_t *, obs_source_t *source) -> void * {
+	info.create = [](obs_data_t *settings, obs_source_t *source) -> void * {
 		auto test = new Test(source);
+		test->main10 = obs_data_get_bool(settings, "main10");
 		proc_handler_add(
 			obs_source_get_proc_handler(source), "void run_peer_acceptance()",
 			[](void *data, calldata_t *) { static_cast<Test *>(data)->start(); }, test);
@@ -482,7 +534,10 @@ void register_ssp_peer_diagnostics()
 
 void run_ssp_peer_acceptance()
 {
-	auto source = obs_source_create_private("ssp_peer_diagnostics", "private peer acceptance", nullptr);
+	auto settings = obs_data_create();
+	obs_data_set_bool(settings, "main10", true);
+	auto source = obs_source_create_private("ssp_peer_diagnostics", "private peer acceptance", settings);
+	obs_data_release(settings);
 	if (!source) {
 		blog(LOG_WARNING, "[obs-ssp] Could not create private peer acceptance test");
 		return;

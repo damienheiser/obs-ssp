@@ -1,6 +1,7 @@
 #include "ssp-peer-obs.h"
 #include "ssp-peer.h"
 #include "ssp-peer-plan.h"
+#include "ssp-peer-timing.h"
 #include "obs-websocket-api.h"
 #include "ffmpeg-decode.h"
 #include <obs-module.h>
@@ -346,10 +347,8 @@ static void output_packet(void *data, encoder_packet *packet)
 	p.video = packet->type == OBS_ENCODER_VIDEO;
 	p.index = (uint32_t)packet->track_idx;
 	p.keyframe = packet->keyframe;
-	p.pts_us = av_rescale_q(packet->pts, AVRational{packet->timebase_num, packet->timebase_den},
-				AVRational{1, 1000000});
-	p.dts_us = av_rescale_q(packet->dts, AVRational{packet->timebase_num, packet->timebase_den},
-				AVRational{1, 1000000});
+	p.pts_us = ssp_encoder_timestamp_us(packet->pts, packet->timebase_den);
+	p.dts_us = ssp_encoder_timestamp_us(packet->dts, packet->timebase_den);
 	p.data = QByteArray((const char *)packet->data, (qsizetype)packet->size);
 	if (!s->server.publish(p)) {
 		output_failure(s, OBS_OUTPUT_ERROR, "SSP sender queue or track bounds exceeded.");
@@ -425,6 +424,7 @@ struct Receiver {
 	bool hardware = true, decoder_error = false, clock_set = false;
 	int64_t remote_base = 0;
 	uint64_t local_base = 0, video_frames = 0, audio_frames = 0, errors = 0;
+	enum video_format last_format = VIDEO_FORMAT_NONE;
 	QString state = "not connected";
 	explicit Receiver(obs_source_t *source) : source(source) {}
 	~Receiver()
@@ -516,6 +516,7 @@ struct Receiver {
 					return;
 				}
 				frame.timestamp = timestamp_ns;
+				last_format = frame.format;
 				obs_source_output_video2(source, &frame);
 				++video_frames;
 			}
@@ -545,6 +546,7 @@ static void receiver_update(void *data, obs_data_t *settings)
 		s->clock_set = false;
 		s->decoder_error = false;
 		s->video_frames = s->audio_frames = s->errors = 0;
+		s->last_format = VIDEO_FORMAT_NONE;
 		s->video_index = (int)obs_data_get_int(settings, "video_track");
 		s->audio_index = (int)obs_data_get_int(settings, "audio_track");
 		s->hardware = obs_data_get_bool(settings, "hardware");
@@ -610,6 +612,7 @@ static void receiver_status(void *data, calldata_t *cd)
 {
 	auto s = static_cast<Receiver *>(data);
 	std::lock_guard<std::mutex> lock(s->mutex);
+	calldata_set_int(cd, "video_format", s->last_format);
 	calldata_set_int(cd, "video_frames", s->video_frames);
 	calldata_set_int(cd, "audio_frames", s->audio_frames);
 	calldata_set_int(cd, "errors", s->errors);
@@ -620,7 +623,7 @@ static void *receiver_create(obs_data_t *settings, obs_source_t *source)
 	auto s = new Receiver(source);
 	proc_handler_add(
 		obs_source_get_proc_handler(source),
-		"void get_ssp_peer_status(out int video_frames, out int audio_frames, out int errors, out string state)",
+		"void get_ssp_peer_status(out int video_frames, out int audio_frames, out int errors, out int video_format, out string state)",
 		receiver_status, s);
 	receiver_update(s, settings);
 	return s;

@@ -29,3 +29,14 @@ The service now sets a generated minimum of 1–10 video and 1–6 audio tracks.
 Tests were written before the plan parser and failed at the missing implementation boundary. The actual OBS data-settings test covers defaults, independent scale/cadence/mix selection and invalid bounds. Desktop acceptance now attaches only primary video/audio encoders and requests the second pair through service settings, retaining the existing real decode/tone/cadence/late-join criteria. Exact interoperable v1 bytes are documented in [OBS_SSP_PEER_PROTOCOL.md](OBS_SSP_PEER_PROTOCOL.md). No camera capability or selector changes are part of this increment.
 
 Observed generation-path acceptance: `/Users/Shared/obs-ssp-peer-b2519fd9-90b3-4bd1-8ba1-6323d116e3e4.json` passed. Only primary encoders were explicitly attached; the service generated video1/audio1. Decoded video292/145frames at320x180/30 and160x90/15, audio462blocks each with distinct449.8/891.5Hz measuredbands, all errors0, latejoin202video351audio. Standard WebSocket dispatcher status/stop and sanitized vendorstatus passed.
+
+
+## Fractional timestamp correction and mixed Main10 acceptance
+
+Real mixed-codec acceptance exposed OBS packet-unit semantics: encoder PTS/DTS ticks already include `timebase_num`; convert using 1/`timebase_den`, matching libobs `packet_dts_usec`, rather than multiplying the numerator again. The regression test covers 30000/1001, a doubled interval, negative preroll and AAC sample ticks. OBS x264 rejects a high-precision renderer before preferred-format conversion; the mixed-codec test uses independent P010 and NV12 private views, preserving actual 10-bit HEVC and 8-bit AVC inputs.
+
+Report `/Users/Shared/obs-ssp-peer-00d2f654-10d5-406b-8bf2-421a2ce13e22.json` PASSED: HEVC Main10 30000/1001 decoded290frames as I010 (format17), AVC15000/1001 decoded144frames as I420, two independentAAC tracks458blocks each, latejoin203video350audio, all receiver errors0. Actual standard WebSocket dispatcher status/stop and sanitized vendorstatus passed. Failed reports remain retained; criteria were not weakened. Normal universal build with both diagnostic optionsOFF and fifteen selected CTests pass; synthetic camera IPC remains excluded.
+
+## Canon application boundary
+
+Operator requested coordination with the Canon agent (thread01a16aea-4f40-7112-9e3e-bab9235bec29). Its reported observed source is MJPEG928x616 approximately30fps, no audio, via HTTP `/stream.mjpg`. It has no SSP implementation. Agreed first integration is real MJPEG decode into OBS, actual OBS encoding, then this existing peer path with actual encoder metadata. Direct MJPEG peer decoding, Canon continuousRAW, native1080p20 and RAW packing are not implemented or qualified here. A future RAW contract must explicitly describe packing, CFA, stride and black/white calibration before advertisement. No Canon hardware action was taken by this work.
