@@ -1,0 +1,63 @@
+{
+  "scope": "/Users/agent-codex/obs-ssp-macos-fix",
+  "date_utc": "2026-10-24T13:14:45.377559+00:00",
+  "source_head_before": "7048a64b67010cd04d3d57ad2ed2395ec33671dc",
+  "items": [
+    {
+      "path": ".deps/obs-studio-31.1.1",
+      "allocated_bytes_before": 657362944,
+      "kind": "directory"
+    },
+    {
+      "path": ".deps/obs-deps-qt6-2025-07-11-universal",
+      "allocated_bytes_before": 141328384,
+      "kind": "directory"
+    },
+    {
+      "path": ".deps/31.1.1.tar.gz",
+      "allocated_bytes_before": 16125952,
+      "kind": "download archive",
+      "sha256": "39751f067bacc13d44b116c5138491b5f1391f91516d3d590d874edd21292291",
+      "recovery_url": "https://github.com/obsproject/obs-studio/archive/refs/tags/31.1.1.tar.gz"
+    },
+    {
+      "path": ".deps/32.2.2.zip",
+      "allocated_bytes_before": 18796544,
+      "kind": "download archive",
+      "sha256": "f15f001f1fa526405318835f44f9910046502f496ebc3a30d5296a5018b831aa",
+      "recovery_url": "https://github.com/obsproject/obs-studio/archive/refs/tags/32.2.2.zip"
+    },
+    {
+      "path": ".deps/macos-deps-2025-07-11-universal.tar.xz",
+      "allocated_bytes_before": 58281984,
+      "kind": "download archive",
+      "sha256": "495687e63383d1a287684b6e2e9bfe246bb8f156fe265926afb1a325af1edd2a",
+      "recovery_url": "https://github.com/obsproject/obs-deps/releases/download/2025-07-11/macos-deps-2025-07-11-universal.tar.xz"
+    },
+    {
+      "path": ".deps/macos-deps-qt6-2025-07-11-universal.tar.xz",
+      "allocated_bytes_before": 26583040,
+      "kind": "download archive",
+      "sha256": "d3f5f04b6ea486e032530bdf0187cbda9a54e0a49621a4c8ba984c5023998867",
+      "recovery_url": "https://github.com/obsproject/obs-deps/releases/download/2025-07-11/macos-deps-qt6-2025-07-11-universal.tar.xz"
+    }
+  ],
+  "retained": [
+    "active worktree and source branches",
+    "current OBS32.2.2/deps2026/Qt2026 and download archives",
+    "current build_macos",
+    "2025 dependency tree: actual old FFmpeg ABI regression header fixture",
+    "all sibling stage directories, private evidence and installed-plugin recovery backups",
+    "all other repositories and Canon provider worktree"
+  ],
+  "archive_verification": "5033 original OBS31 files and4399 Qt2025 files match original archives exactly; OBS extras are generated build_universal/.deps and build number; no live symlink targets selected items.",
+  "recovery": "Download removed archives using recorded URLs and verify SHA256. Re-extract Qt2025 to original folder; extract OBS31 archive stripping its top-level directory. Generated OBS31 build/.deps outputs are reproducible from the archived source/bootstrap; not historical source edits. Other original artifacts remain retained.",
+  "allocated_bytes_reclaimed": 918478848,
+  "validation": {
+    "configure": "cmake --preset macos passed",
+    "abi_fixture": "test-decoder-incompatible rebuilt successfully against retained old headers/current FFmpeg",
+    "offline_tests": "15/15 selected CTests passed in7.58s; synthetic camera IPC excluded",
+    "worktrees": "one active worktree, no stale metadata from prune dry-run; no worktree/branch removed",
+    "camera": "no camera dials, controller writes, GUI actions or installed-plugin changes"
+  }
+}
