@@ -39,5 +39,21 @@ int main(int argc, char **argv)
 	if (audio.samples_per_sec != 48000 || audio.frames != 1024 || audio.speakers != SPEAKERS_STEREO)
 		return 10;
 	ffmpeg_decode_free(&d);
+	unsigned profile = ((data[2] >> 6) & 3) + 1;
+	unsigned frequency = (data[2] >> 2) & 15;
+	unsigned channels = ((data[2] & 1) << 2) | (data[3] >> 6);
+	unsigned char config[2] = {(unsigned char)((profile << 3) | (frequency >> 1)),
+				   (unsigned char)(((frequency & 1) << 7) | (channels << 3))};
+	unsigned header = (data[1] & 1) ? 7 : 9;
+	if (ffmpeg_decode_init_ex(&d, AV_CODEC_ID_AAC, false, 48000, channels, config, sizeof(config)) < 0)
+		return 12;
+	got = false;
+	if (!ffmpeg_decode_audio(&d, data + header, size - header, &audio, &got) || !got ||
+	    audio.samples_per_sec != 48000 || audio.frames != 1024)
+		return 13;
+	ffmpeg_decode_free(&d);
+	if (ffmpeg_decode_init_ex(&d, AV_CODEC_ID_AAC, false, 48000, channels, config, 65537) >= 0)
+		return 14;
+	puts("raw AAC with actual AudioSpecificConfig decoded; oversized config rejected");
 	return 0;
 }

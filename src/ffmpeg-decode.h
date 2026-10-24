@@ -51,6 +51,8 @@ struct ffmpeg_decode {
 
 extern bool ffmpeg_decode_compatible(void);
 
+extern int ffmpeg_decode_init_ex(struct ffmpeg_decode *decode, enum AVCodecID id, bool use_hw, uint32_t sample_rate,
+				 uint32_t channels, const uint8_t *extra, size_t extra_size);
 extern int ffmpeg_decode_init(struct ffmpeg_decode *decode, enum AVCodecID id, bool use_hw);
 extern int ffmpeg_decode_audio_init(struct ffmpeg_decode *decode, enum AVCodecID id, uint32_t sample_rate,
 				    uint32_t channels);

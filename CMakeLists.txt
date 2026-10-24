@@ -57,6 +57,8 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/Modules")
 set(
   obs-ssp_SOURCES
   src/obs-ssp.cpp
+  src/ssp-peer.cpp
+  src/ssp-peer-obs.cpp
   src/obs-ssp-source.cpp
   src/ffmpeg-decode.c
   src/controller/cameraconfig.cpp
@@ -85,6 +87,15 @@ set(
 )
 
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${obs-ssp_SOURCES} ${obs-ssp_HEADERS})
+option(OBS_SSP_DIAGNOSTICS "Enable explicit real-OBS peer acceptance-test source" OFF)
+option(OBS_SSP_AUTORUN_DIAGNOSTICS "Run the private real-OBS peer test after startup" OFF)
+if(OBS_SSP_DIAGNOSTICS)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/ssp-peer-diagnostics.cpp)
+  if(OBS_SSP_AUTORUN_DIAGNOSTICS)
+    target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE OBS_SSP_AUTORUN_DIAGNOSTICS)
+  endif()
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE OBS_SSP_DIAGNOSTICS)
+endif()
 
 # Keep legacy decoder warnings visible without requiring changes to the excluded source.
 set_source_files_properties(
@@ -140,6 +151,35 @@ endif()
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
 if(SSP_BUILD_TESTS)
+  if(APPLE)
+    enable_language(OBJCXX)
+    add_executable(test-obs-peer cmake/tests/test-obs-peer.mm)
+    target_link_libraries(test-obs-peer PRIVATE OBS::libobs Qt6::Widgets)
+    target_compile_definitions(
+      test-obs-peer
+      PRIVATE
+        SSP_TEST_MODULE="$<TARGET_FILE:${CMAKE_PROJECT_NAME}>"
+        SSP_TEST_RESOURCES="$<TARGET_BUNDLE_DIR:${CMAKE_PROJECT_NAME}>/Contents/Resources"
+    )
+    add_dependencies(test-obs-peer ${CMAKE_PROJECT_NAME})
+  endif()
+
+  add_executable(test-peer-adversary cmake/tests/test-peer-adversary.cpp src/ssp-peer.cpp)
+  target_include_directories(test-peer-adversary PRIVATE src)
+  target_link_libraries(test-peer-adversary PRIVATE Qt6::Core Qt6::Network)
+  if(EXISTS "${SSP_TEST_VIDEO_CAPTURE}")
+    add_test(NAME ssp-peer-adversary COMMAND test-peer-adversary "${SSP_TEST_VIDEO_CAPTURE}")
+    set_tests_properties(ssp-peer-adversary PROPERTIES TIMEOUT 30)
+  endif()
+
+  add_executable(test-ssp-peer cmake/tests/test-ssp-peer.cpp src/ssp-peer.cpp)
+  target_include_directories(test-ssp-peer PRIVATE src)
+  target_link_libraries(test-ssp-peer PRIVATE Qt6::Core Qt6::Network)
+  if(EXISTS "${SSP_TEST_VIDEO_CAPTURE}")
+    add_test(NAME ssp-peer-transport COMMAND test-ssp-peer "${SSP_TEST_VIDEO_CAPTURE}")
+    set_tests_properties(ssp-peer-transport PROPERTIES TIMEOUT 25)
+  endif()
+
   add_executable(test-camera-imaging cmake/tests/test-camera-imaging.cpp)
   target_include_directories(test-camera-imaging PRIVATE src)
   target_link_libraries(test-camera-imaging PRIVATE Qt6::Core Qt6::Network)
@@ -229,6 +269,9 @@ if(SSP_BUILD_TESTS)
     list(JOIN _test_rpaths " " _test_rpath_string)
     foreach(
       _test_target
+      test-obs-peer
+      test-ssp-peer
+      test-peer-adversary
       test-camera-imaging
       test-camera-settings
       test-camera-config

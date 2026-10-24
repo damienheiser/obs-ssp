@@ -69,11 +69,14 @@ bool ffmpeg_decode_compatible(void)
 }
 
 static int ffmpeg_decode_init_internal(struct ffmpeg_decode *decode, enum AVCodecID id, bool use_hw,
-				       uint32_t sample_rate, uint32_t channels)
+				       uint32_t sample_rate, uint32_t channels, const uint8_t *extra, size_t extra_size,
+				       bool peer_bounds)
 {
 	int ret;
 
 	memset(decode, 0, sizeof(*decode));
+	if (extra_size > 65536 || (extra_size && !extra) || channels > 8 || sample_rate > 192000)
+		return AVERROR(EINVAL);
 	if (!ffmpeg_decode_compatible()) {
 		blog(LOG_ERROR,
 		     "[obs-ssp] FFmpeg ABI mismatch: headers avcodec=%d avutil=%d, runtime avcodec=%u avutil=%u. Install a build matching OBS.",
@@ -94,7 +97,18 @@ static int ffmpeg_decode_init_internal(struct ffmpeg_decode *decode, enum AVCode
 		decode->decoder->sample_rate = (int)sample_rate;
 	if (channels)
 		av_channel_layout_default(&decode->decoder->ch_layout, (int)channels);
-	decode->decoder->thread_count = 0;
+	if (extra_size) {
+		decode->decoder->extradata = av_mallocz(extra_size + AV_INPUT_BUFFER_PADDING_SIZE);
+		if (!decode->decoder->extradata) {
+			ffmpeg_decode_free(decode);
+			return AVERROR(ENOMEM);
+		}
+		memcpy(decode->decoder->extradata, extra, extra_size);
+		decode->decoder->extradata_size = (int)extra_size;
+	}
+	decode->decoder->pkt_timebase = (AVRational){1, 1000000};
+	decode->decoder->max_pixels = peer_bounds ? 33554432 : decode->decoder->max_pixels;
+	decode->decoder->thread_count = peer_bounds ? 4 : 0;
 	decode->decoder->delay = 0;
 
 	if (use_hw)
@@ -109,16 +123,22 @@ static int ffmpeg_decode_init_internal(struct ffmpeg_decode *decode, enum AVCode
 	return 0;
 }
 
+int ffmpeg_decode_init_ex(struct ffmpeg_decode *decode, enum AVCodecID id, bool use_hw, uint32_t sample_rate,
+			  uint32_t channels, const uint8_t *extra, size_t extra_size)
+{
+	return ffmpeg_decode_init_internal(decode, id, use_hw, sample_rate, channels, extra, extra_size, true);
+}
+
 int ffmpeg_decode_init(struct ffmpeg_decode *decode, enum AVCodecID id, bool use_hw)
 {
-	return ffmpeg_decode_init_internal(decode, id, use_hw, 0, 0);
+	return ffmpeg_decode_init_internal(decode, id, use_hw, 0, 0, NULL, 0, false);
 }
 
 int ffmpeg_decode_audio_init(struct ffmpeg_decode *decode, enum AVCodecID id, uint32_t sample_rate, uint32_t channels)
 {
 	if (!sample_rate || !channels || channels > 8)
 		return AVERROR(EINVAL);
-	return ffmpeg_decode_init_internal(decode, id, false, sample_rate, channels);
+	return ffmpeg_decode_init_internal(decode, id, false, sample_rate, channels, NULL, 0, false);
 }
 
 void ffmpeg_decode_free(struct ffmpeg_decode *decode)

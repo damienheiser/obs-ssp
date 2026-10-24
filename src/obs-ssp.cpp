@@ -29,6 +29,7 @@ along with this program; If not, see <https://www.gnu.org/licenses/>
 #include "obs-ssp.h"
 #include "ssp-controller.h"
 #include "ffmpeg-decode.h"
+#include "ssp-peer-obs.h"
 
 #if defined(__APPLE__)
 
@@ -56,11 +57,17 @@ bool obs_module_load(void)
 	create_mdns_loop();
 	ssp_source_info = create_ssp_source_info();
 	obs_register_source(&ssp_source_info);
+	register_ssp_peer();
+#ifdef OBS_SSP_DIAGNOSTICS
+	extern void register_ssp_peer_diagnostics();
+	register_ssp_peer_diagnostics();
+#endif
 	return true;
 }
 
 void obs_module_unload()
 {
+	ssp_peer_unload();
 	stop_mdns_loop();
 	ssp_blog(LOG_INFO, "goodbye !");
 }
@@ -73,4 +80,9 @@ const char *obs_module_name()
 const char *obs_module_description()
 {
 	return "Simple Stream Protocol input integration for OBS Studio";
+}
+
+void obs_module_post_load()
+{
+	ssp_peer_post_load();
 }
