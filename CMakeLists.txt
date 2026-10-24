@@ -164,6 +164,11 @@ if(SSP_BUILD_TESTS)
     add_dependencies(test-obs-peer ${CMAKE_PROJECT_NAME})
   endif()
 
+  add_executable(test-ssp-plan cmake/tests/test-ssp-plan.cpp)
+  target_include_directories(test-ssp-plan PRIVATE src)
+  target_link_libraries(test-ssp-plan PRIVATE OBS::libobs)
+  add_test(NAME ssp-peer-plan COMMAND test-ssp-plan)
+
   add_executable(test-peer-adversary cmake/tests/test-peer-adversary.cpp src/ssp-peer.cpp)
   target_include_directories(test-peer-adversary PRIVATE src)
   target_link_libraries(test-peer-adversary PRIVATE Qt6::Core Qt6::Network)
@@ -272,6 +277,7 @@ if(SSP_BUILD_TESTS)
       test-obs-peer
       test-ssp-peer
       test-peer-adversary
+      test-ssp-plan
       test-camera-imaging
       test-camera-settings
       test-camera-config

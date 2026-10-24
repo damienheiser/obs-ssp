@@ -1,3 +1,11 @@
+# Current increment: service-generated multitrack — 2026-10-23 22:09 PDT
+
+Normal service UI now configures video/audio counts, per-extra-track scale/cadence/bitrate and audio mix. It clones only missing encoders, preserves explicit attachments, and owns/releases its generated refs. Tests first: missing-header red, then actual OBS settings parser green, invalid counts/scale/divisor/mixer/bitrate rejected. Universal build and three focused peer CTests pass.
+
+REAL OBS generation-path acceptance PASSED /Users/Shared/obs-ssp-peer-b2519fd9-90b3-4bd1-8ba1-6323d116e3e4.json: only primary encoders attached, service generated second pair; video292/145frames at320x180/30 and160x90/15, audio462blocks each, errors0, latejoin202video351audio. WebSocket dispatcher status/stop and key-free vendorstatus pass. Exact wire contract docs/OBS_SSP_PEER_PROTOCOL.md shared with camera agent; its platform still has no OSSPv1 network implementation or advertisement. Current instrumented generation build installed, rollback /Users/hedon/Library/Application Support/obs-studio/plugin-backups/20261023-track-plan-220830. OBS idle/restarted for actual test; no camera settings written.
+
+Next: actual peer mixed HEVC10bit/AVC acceptance, normal diagnosticsOFF build/install, final UI/source checks, focused commit/push. External authenticated WebSocket network session and frontend StartStream remain untested. Existing source settings were user-changed (properties paused/main/H265/10bit/2880square displayed); do not overwrite with old secondary assumptions. No firmware/new codec identifiers invented.
+
 # OBS peer transport first milestone — 2026-10-23
 
 ## Implemented and observed

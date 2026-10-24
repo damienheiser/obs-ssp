@@ -1,5 +1,6 @@
 #include "ssp-peer-obs.h"
 #include "ssp-peer.h"
+#include "ssp-peer-plan.h"
 #include "obs-websocket-api.h"
 #include "ffmpeg-decode.h"
 #include <obs-module.h>
@@ -54,6 +55,29 @@ static void defaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, "bind", "127.0.0.1");
 	obs_data_set_default_int(settings, "port", 9998);
+	obs_data_set_default_int(settings, "video_tracks", 1);
+	obs_data_set_default_int(settings, "audio_tracks", 1);
+	for (int i = 1; i < 10; ++i) {
+		auto suffix = std::to_string(i);
+		obs_data_set_default_int(settings, ("video_scale_" + suffix).c_str(), 2);
+		obs_data_set_default_int(settings, ("video_divisor_" + suffix).c_str(), 1);
+		obs_data_set_default_int(settings, ("video_bitrate_" + suffix).c_str(), 2500);
+	}
+	for (int i = 1; i < 6; ++i) {
+		auto suffix = std::to_string(i);
+		obs_data_set_default_int(settings, ("audio_mixer_" + suffix).c_str(), i);
+		obs_data_set_default_int(settings, ("audio_bitrate_" + suffix).c_str(), 128);
+	}
+}
+static bool track_visibility(obs_properties_t *p, obs_property_t *, obs_data_t *settings)
+{
+	for (int i = 1; i < 10; ++i)
+		obs_property_set_visible(obs_properties_get(p, ("video_group_" + std::to_string(i)).c_str()),
+					 i < obs_data_get_int(settings, "video_tracks"));
+	for (int i = 1; i < 6; ++i)
+		obs_property_set_visible(obs_properties_get(p, ("audio_group_" + std::to_string(i)).c_str()),
+					 i < obs_data_get_int(settings, "audio_tracks"));
+	return true;
 }
 static obs_properties_t *service_properties(void *)
 {
@@ -64,11 +88,57 @@ static obs_properties_t *service_properties(void *)
 	obs_property_set_long_description(
 		secret,
 		"A new service generates a cryptographically random 256-bit key. Copy the same 64-hex-digit key to receivers. Only import keys from a secure generator. Media authentication/integrity is separate from obs-websocket; media is not encrypted, so use a trusted LAN or VPN.");
+	auto count = obs_properties_add_int(p, "video_tracks", "Video tracks", 1, 10, 1);
+	obs_property_set_modified_callback(count, track_visibility);
+	count = obs_properties_add_int(p, "audio_tracks", "Audio tracks", 1, 6, 1);
+	obs_property_set_modified_callback(count, track_visibility);
+	for (int i = 1; i < 10; ++i) {
+		auto suffix = std::to_string(i);
+		auto group = obs_properties_create();
+		auto scale = obs_properties_add_list(group, ("video_scale_" + suffix).c_str(),
+						     "Resolution relative to primary", OBS_COMBO_TYPE_LIST,
+						     OBS_COMBO_FORMAT_INT);
+		obs_property_list_add_int(scale, "Full size", 1);
+		obs_property_list_add_int(scale, "Half size", 2);
+		obs_property_list_add_int(scale, "Quarter size", 4);
+		obs_properties_add_int(group, ("video_divisor_" + suffix).c_str(), "Frame rate divisor", 1, 4, 1);
+		obs_properties_add_int(group, ("video_bitrate_" + suffix).c_str(), "Bitrate (kbps)", 128, 200000, 1);
+		obs_properties_add_group(p, ("video_group_" + suffix).c_str(),
+					 ("Video track " + suffix + " (primary codec)").c_str(), OBS_GROUP_NORMAL,
+					 group);
+	}
+	for (int i = 1; i < 6; ++i) {
+		auto suffix = std::to_string(i);
+		auto group = obs_properties_create();
+		obs_properties_add_int(group, ("audio_mixer_" + suffix).c_str(), "OBS audio mix (0–5)", 0, 5, 1);
+		obs_properties_add_int(group, ("audio_bitrate_" + suffix).c_str(), "Bitrate (kbps)", 32, 1024, 1);
+		obs_properties_add_group(p, ("audio_group_" + suffix).c_str(),
+					 ("Audio track " + suffix + " (primary codec)").c_str(), OBS_GROUP_NORMAL,
+					 group);
+	}
 	return p;
 }
 struct Output {
 	obs_output_t *output;
 	ssp_peer::Server server;
+	struct Generated {
+		bool video;
+		size_t index;
+		obs_encoder_t *encoder;
+	};
+	std::vector<Generated> generated;
+	void clear_generated()
+	{
+		for (auto &g : generated) {
+			if (g.video) {
+				if (obs_output_get_video_encoder2(output, g.index) == g.encoder)
+					obs_output_set_video_encoder2(output, nullptr, g.index);
+			} else if (obs_output_get_audio_encoder(output, g.index) == g.encoder)
+				obs_output_set_audio_encoder(output, nullptr, g.index);
+			obs_encoder_release(g.encoder);
+		}
+		generated.clear();
+	}
 	std::mutex mutex;
 	QVector<Track> tracks;
 	std::array<std::atomic<uint64_t>, 16> track_packets{};
@@ -132,12 +202,76 @@ static QVector<Track> encoder_tracks(obs_output_t *output)
 	}
 	return tracks;
 }
+static bool generate_tracks(Output *s, obs_data_t *settings)
+{
+	SspTrackPlan plan;
+	if (!ssp_read_track_plan(settings, plan))
+		return false;
+	s->clear_generated();
+	auto primary_video = obs_output_get_video_encoder2(s->output, 0);
+	auto primary_audio = obs_output_get_audio_encoder(s->output, 0);
+	if (!primary_video || !primary_audio)
+		return false;
+	for (int i = 1; i < plan.video_count; ++i) {
+		if (obs_output_get_video_encoder2(s->output, i))
+			continue;
+		auto config = obs_encoder_get_settings(primary_video);
+		auto copy = obs_data_create();
+		obs_data_apply(copy, config);
+		obs_data_release(config);
+		obs_data_set_int(copy, "bitrate", plan.video[i].bitrate);
+		auto name = std::string(obs_output_get_name(s->output)) + " video " + std::to_string(i);
+		auto encoder = obs_video_encoder_create(obs_encoder_get_id(primary_video), name.c_str(), copy, nullptr);
+		obs_data_release(copy);
+		if (!encoder)
+			return false;
+		s->generated.push_back({true, (size_t)i, encoder});
+		obs_encoder_set_video(encoder, obs_encoder_video(primary_video));
+		auto width = obs_encoder_get_width(primary_video) / plan.video[i].scale;
+		auto height = obs_encoder_get_height(primary_video) / plan.video[i].scale;
+		if (width < 32 || height < 18)
+			return false;
+		obs_encoder_set_scaled_size(encoder, width & ~1u, height & ~1u);
+		if (!obs_encoder_set_frame_rate_divisor(encoder, plan.video[i].divisor))
+			return false;
+		obs_output_set_video_encoder2(s->output, encoder, i);
+	}
+	for (int i = 1; i < plan.audio_count; ++i) {
+		if (obs_output_get_audio_encoder(s->output, i))
+			continue;
+		auto config = obs_encoder_get_settings(primary_audio);
+		auto copy = obs_data_create();
+		obs_data_apply(copy, config);
+		obs_data_release(config);
+		obs_data_set_int(copy, "bitrate", plan.audio[i].bitrate);
+		auto name = std::string(obs_output_get_name(s->output)) + " audio " + std::to_string(i);
+		auto encoder = obs_audio_encoder_create(obs_encoder_get_id(primary_audio), name.c_str(), copy,
+							plan.audio[i].mixer, nullptr);
+		obs_data_release(copy);
+		if (!encoder)
+			return false;
+		s->generated.push_back({false, (size_t)i, encoder});
+		obs_encoder_set_audio(encoder, obs_encoder_audio(primary_audio));
+		obs_output_set_audio_encoder(s->output, encoder, i);
+	}
+	return true;
+}
 static bool output_start(void *data)
 {
 	auto s = static_cast<Output *>(data);
 	auto service = obs_output_get_service(s->output);
 	if (!service || strcmp(obs_service_get_type(service), "ssp_service") != 0) {
 		obs_output_set_last_error(s->output, "Select the SSP peer streaming service.");
+		return false;
+	}
+	auto plan_settings = obs_service_get_settings(service);
+	bool generated = generate_tracks(s, plan_settings);
+	obs_data_release(plan_settings);
+	if (!generated) {
+		s->clear_generated();
+		obs_output_set_last_error(
+			s->output,
+			"Invalid SSP track plan or unavailable encoder. Check track counts, scale, cadence and audio mixes.");
 		return false;
 	}
 	if (!obs_output_can_begin_data_capture(s->output, 0) || !obs_output_initialize_encoders(s->output, 0))
@@ -256,6 +390,7 @@ static void output_destroy(void *data)
 		outputs.erase(std::remove(outputs.begin(), outputs.end(), s), outputs.end());
 	}
 	s->server.stop();
+	s->clear_generated();
 	delete s;
 }
 static uint64_t output_bytes(void *data)
@@ -564,6 +699,19 @@ void register_ssp_peer()
 	source.get_defaults = [](obs_data_t *settings) {
 		obs_data_set_default_string(settings, "host", "127.0.0.1");
 		obs_data_set_default_int(settings, "port", 9998);
+		obs_data_set_default_int(settings, "video_tracks", 1);
+		obs_data_set_default_int(settings, "audio_tracks", 1);
+		for (int i = 1; i < 10; ++i) {
+			auto suffix = std::to_string(i);
+			obs_data_set_default_int(settings, ("video_scale_" + suffix).c_str(), 2);
+			obs_data_set_default_int(settings, ("video_divisor_" + suffix).c_str(), 1);
+			obs_data_set_default_int(settings, ("video_bitrate_" + suffix).c_str(), 2500);
+		}
+		for (int i = 1; i < 6; ++i) {
+			auto suffix = std::to_string(i);
+			obs_data_set_default_int(settings, ("audio_mixer_" + suffix).c_str(), i);
+			obs_data_set_default_int(settings, ("audio_bitrate_" + suffix).c_str(), 128);
+		}
 		obs_data_set_default_bool(settings, "hardware", true);
 	};
 	obs_register_source(&source);

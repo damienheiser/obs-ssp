@@ -250,7 +250,7 @@ struct Test : QObject {
 		video = obs_view_add2(view, &info);
 		if (!check(video != nullptr, "Private video renderer unavailable"))
 			return;
-		for (int i = 0; i < 2; ++i) {
+		for (int i = 0; i < 1; ++i) {
 			settings = obs_data_create();
 			obs_data_set_int(settings, "bitrate", 600);
 			obs_data_set_string(settings, "rate_control", "CBR");
@@ -286,6 +286,11 @@ struct Test : QObject {
 		settings = obs_data_create();
 		obs_data_set_string(settings, "bind", "127.0.0.1");
 		obs_data_set_int(settings, "port", 0);
+		obs_data_set_int(settings, "video_tracks", 2);
+		obs_data_set_int(settings, "audio_tracks", 2);
+		obs_data_set_int(settings, "video_scale_1", 2);
+		obs_data_set_int(settings, "video_divisor_1", 2);
+		obs_data_set_int(settings, "audio_mixer_1", 1);
 		obs_data_set_string(settings, "key", key.constData());
 		service = obs_service_create("ssp_service", "peer diagnostic service", settings, nullptr);
 		obs_data_release(settings);
@@ -293,7 +298,7 @@ struct Test : QObject {
 		if (!check(output && service, "SSP output/service registration missing"))
 			return;
 		obs_output_set_service(output, service);
-		for (int i = 0; i < 2; ++i) {
+		for (int i = 0; i < 1; ++i) {
 			obs_output_set_video_encoder2(output, video_encoders[i], i);
 			obs_output_set_audio_encoder(output, audio_encoders[i], i);
 		}
@@ -385,7 +390,7 @@ struct Test : QObject {
 				safe.append(item);
 			}
 			report["tracks"] = safe;
-			bool cadence = true;
+			bool cadence = safe.size() == 4;
 			for (auto value : safe) {
 				auto track = value.toObject();
 				if (track["kind"].toString() != "video")
