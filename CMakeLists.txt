@@ -250,6 +250,13 @@ if(SSP_BUILD_TESTS)
       )
     endif()
   endif()
+  add_executable(test-prores12 cmake/tests/test-prores12.c src/ffmpeg-decode.c)
+  target_include_directories(test-prores12 PRIVATE src)
+  target_link_libraries(test-prores12 PRIVATE OBS::libobs FFmpeg::avcodec FFmpeg::avutil)
+  set(SSP_TEST_PRORES12_CAPTURE "" CACHE FILEPATH "Private real ap4h12-bit ProRes access unit")
+  if(EXISTS "${SSP_TEST_PRORES12_CAPTURE}")
+    add_test(NAME prores12-capture COMMAND test-prores12 "${SSP_TEST_PRORES12_CAPTURE}")
+  endif()
   add_executable(test-decoder-prores cmake/tests/test-decoder-prores.c src/ffmpeg-decode.c)
   target_include_directories(test-decoder-prores PRIVATE src)
   target_link_libraries(test-decoder-prores PRIVATE OBS::libobs FFmpeg::avcodec FFmpeg::avutil)
@@ -315,6 +322,7 @@ if(SSP_BUILD_TESTS)
       test-frame-queue
       test-decoder
       test-decoder-prores
+      test-prores12
       test-native-prores
       test-decoder-video
       test-decoder-pcm

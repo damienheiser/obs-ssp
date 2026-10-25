@@ -54,6 +54,9 @@ extern bool ffmpeg_decode_compatible(void);
 extern int ffmpeg_decode_init_ex(struct ffmpeg_decode *decode, enum AVCodecID id, bool use_hw, uint32_t sample_rate,
 				 uint32_t channels, const uint8_t *extra, size_t extra_size);
 extern int ffmpeg_decode_init(struct ffmpeg_decode *decode, enum AVCodecID id, bool use_hw);
+/* Explicit trusted media descriptor. codec_tag uses FFmpeg MKTAG byte order;
+ * bits are coded component depth, not inferred source precision/calibration. */
+extern int ffmpeg_decode_prores_init(struct ffmpeg_decode *decode, uint32_t codec_tag, uint32_t coded_bits);
 extern int ffmpeg_decode_audio_init(struct ffmpeg_decode *decode, enum AVCodecID id, uint32_t sample_rate,
 				    uint32_t channels);
 extern void ffmpeg_decode_free(struct ffmpeg_decode *decode);

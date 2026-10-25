@@ -4,7 +4,7 @@
 
 OwnOBScheckout /Users/agent-codex/obs-ssp-macos-fix nowfix/prores-receiver fromcleanup e63dd0c. User explicitly clarified receiverimplementation expected, notjuststatuscoordination. Codec1006 metadata declared; fullbounded.icpfframeframing validated. Actualproductionparser returnsbyte-exactpayload/PTS fromall9Trial12wirefiles. Foundrealredtest:firstactualC4KframebufferedbydefaultFFmpegframethreading. FIXProRes4slicethreads/32MP limit;9/9immediateI2104096x2160withoriginalmicrosecondPTS,noEOFflushPASS. ExistingProResprofiledecoderchecks pass.16selectedofflineCTests pass7.10s; syntheticcameraIPCexcluded. Universalnormalandrecorded-OBSdiagnosticvariantscompile,formattingpasses. Design docs/prores-receiver.md.
 
-NormaldiagnosticsOFFbundleinstalled/signed /Users/hedon/Library/Application Support/obs-studio/plugins/obs-ssp.plugin. SHA256322b4ed2e1e45ea358d74edf336cbddb66a2b3b49cb9898754cec8643fcc42bd. Owner-onlymanifest /Users/Shared/obs-ssp-prores-install.json. Rollback /Users/hedon/Library/Application Support/obs-studio/plugin-backups/20261024-prores-receiver-183011/previous.plugin. OBSclosedverifiedatinstall;notlaunched. No cameraformat/controllerwrites ornewcameradials.
+Original10bitreceiver normaldiagnosticsOFFbundleinstalled/signed /Users/hedon/Library/Application Support/obs-studio/plugins/obs-ssp.plugin. SHA256322b4ed2e1e45ea358d74edf336cbddb66a2b3b49cb9898754cec8643fcc42bd. Owner-onlymanifest /Users/Shared/obs-ssp-prores-install.json. Rollback /Users/hedon/Library/Application Support/obs-studio/plugin-backups/20261024-prores-receiver-183011/previous.plugin. OBSclosedverifiedatinstall;notlaunched. No cameraformat/controllerwrites ornewcameradials.
 
 ## Additional actual fixture verified
 
@@ -13,6 +13,12 @@ CameraagentTrial15 supplied20actualC4Kwire/payloadframes. Testharnessnowacceptse
 ## Trial18 offline receiver evidence
 
 Camera sourcec9c959f Trial18finitecapture20/20passesactualproductionwireparser+immediateI210C4K/exactpayloadPTS/noEOFflush, no receivercodechange. Evidence /Users/agent-codex/obs-ssp-diagnostics/prores18-receiver.log. Unknownprofiletagwarning(noSSPcontainerfourcc)retained;no guessedprofile. SenderreportszeroFIFOerrors/cleandisconnect separately. Cameraagentnowrunsprofile19native+independentdecode30min with45minguard;keepOBS/directSSPclosedandno controller/newreaderactionsuntilitswindowreleased. Actualgreenscreeninputqualitystillunqualified.
+
+## Actual12bit host decoder primitive
+
+Newffmpeg_decode_prores_init validatesFourCC/depthbeforecodecopen(ap4h/ap4x12,422tags10); AVYUV444P12LE->OBSI412mapping. Actualprivatehostap4hfixturebaselinewithtag0decoded10bit444; newexplicitdescriptor12testPASSimmediateC4K/I412/PTS/threefullresrightaligned12bitplanes/noalpha. Invalidpairsreject;full18offlineCTests pass7.29s;independentfocusedreviewnoconcreteissues,didnotruntests/readfixture. PrivatefixtureSHAverified, neverpublished. NormalpluginupdateddiagnosticsOFFwithOBSclosed, SHA371c91a57e2c5df64f49a1d5d4975db18420b454abefd1c2908f98f527973fa8;rollback20261024-prores12-decoder-205248/previous.plugin,manifest /Users/Shared/obs-ssp-prores12-install.json. No cameraactions.
+
+12bitTRANSPORTNOTIMPLEMENTED: native4MiBcaptoo smallforactual6.1MBpayload, native/peerdescriptornotyetwiredtonewcodecinit. Donotclaim12bitcamera/nativeSSP/alpha/real-time/colorcalibration. SourceconverterdeclaredfullBT709matrixbutffprobestream+framesreportTVrange/noothercolortags; preserveconflictandunknownprimaries/transfer. Bayerrequiresnewdistinctpacking/CFA/stride/calibration+demosaic;noOBSBayerformat. Requirementsproposal docs/media-format-descriptor.md sharedcameraagent.
 
 ## Exact pending check/blocker
 

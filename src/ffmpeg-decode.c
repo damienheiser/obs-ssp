@@ -70,7 +70,7 @@ bool ffmpeg_decode_compatible(void)
 
 static int ffmpeg_decode_init_internal(struct ffmpeg_decode *decode, enum AVCodecID id, bool use_hw,
 				       uint32_t sample_rate, uint32_t channels, const uint8_t *extra, size_t extra_size,
-				       bool peer_bounds)
+				       bool peer_bounds, uint32_t codec_tag, uint32_t coded_bits)
 {
 	int ret;
 
@@ -85,6 +85,13 @@ static int ffmpeg_decode_init_internal(struct ffmpeg_decode *decode, enum AVCode
 		return AVERROR(EINVAL);
 	}
 
+	if (codec_tag || coded_bits) {
+		bool profile12 = codec_tag == MKTAG('a', 'p', '4', 'h') || codec_tag == MKTAG('a', 'p', '4', 'x');
+		bool profile10 = codec_tag == MKTAG('a', 'p', 'c', 'o') || codec_tag == MKTAG('a', 'p', 'c', 's') ||
+				 codec_tag == MKTAG('a', 'p', 'c', 'n') || codec_tag == MKTAG('a', 'p', 'c', 'h');
+		if (id != AV_CODEC_ID_PRORES || !((profile12 && coded_bits == 12) || (profile10 && coded_bits == 10)))
+			return AVERROR(EINVAL);
+	}
 	decode->codec = avcodec_find_decoder(id);
 	if (!decode->codec)
 		return -1;
@@ -93,6 +100,9 @@ static int ffmpeg_decode_init_internal(struct ffmpeg_decode *decode, enum AVCode
 
 	if (!decode->decoder)
 		return AVERROR(ENOMEM);
+	decode->decoder->codec_tag = codec_tag;
+	if (coded_bits)
+		decode->decoder->bits_per_raw_sample = (int)coded_bits;
 	if (sample_rate)
 		decode->decoder->sample_rate = (int)sample_rate;
 	if (channels)
@@ -133,19 +143,29 @@ static int ffmpeg_decode_init_internal(struct ffmpeg_decode *decode, enum AVCode
 int ffmpeg_decode_init_ex(struct ffmpeg_decode *decode, enum AVCodecID id, bool use_hw, uint32_t sample_rate,
 			  uint32_t channels, const uint8_t *extra, size_t extra_size)
 {
-	return ffmpeg_decode_init_internal(decode, id, use_hw, sample_rate, channels, extra, extra_size, true);
+	return ffmpeg_decode_init_internal(decode, id, use_hw, sample_rate, channels, extra, extra_size, true, 0, 0);
 }
 
 int ffmpeg_decode_init(struct ffmpeg_decode *decode, enum AVCodecID id, bool use_hw)
 {
-	return ffmpeg_decode_init_internal(decode, id, use_hw, 0, 0, NULL, 0, false);
+	return ffmpeg_decode_init_internal(decode, id, use_hw, 0, 0, NULL, 0, false, 0, 0);
+}
+
+int ffmpeg_decode_prores_init(struct ffmpeg_decode *decode, uint32_t codec_tag, uint32_t coded_bits)
+{
+	if (!codec_tag || !coded_bits) {
+		memset(decode, 0, sizeof(*decode));
+		return AVERROR(EINVAL);
+	}
+	return ffmpeg_decode_init_internal(decode, AV_CODEC_ID_PRORES, false, 0, 0, NULL, 0, true, codec_tag,
+					   coded_bits);
 }
 
 int ffmpeg_decode_audio_init(struct ffmpeg_decode *decode, enum AVCodecID id, uint32_t sample_rate, uint32_t channels)
 {
 	if (!sample_rate || !channels || channels > 8)
 		return AVERROR(EINVAL);
-	return ffmpeg_decode_init_internal(decode, id, false, sample_rate, channels, NULL, 0, false);
+	return ffmpeg_decode_init_internal(decode, id, false, sample_rate, channels, NULL, 0, false, 0, 0);
 }
 
 void ffmpeg_decode_free(struct ffmpeg_decode *decode)
@@ -197,6 +217,8 @@ static inline enum video_format convert_pixel_format(int f)
 		return VIDEO_FORMAT_I010;
 	case AV_PIX_FMT_YUV422P10LE:
 		return VIDEO_FORMAT_I210;
+	case AV_PIX_FMT_YUV444P12LE:
+		return VIDEO_FORMAT_I412;
 	case AV_PIX_FMT_BGR0:
 		return VIDEO_FORMAT_BGRX;
 	case AV_PIX_FMT_P010LE:
