@@ -10,6 +10,10 @@ NormaldiagnosticsOFFbundleinstalled/signed /Users/hedon/Library/Application Supp
 
 CameraagentTrial15 supplied20actualC4Kwire/payloadframes. Testharnessnowacceptsexplicitboundedexpectedcount;newCTestredagainstoldfixed-ninebinarythengreenafterparameterization. Original9andnew20eachPASSproductionparser+immediateI2104096x2160+exactpayload/PTS/noEOFflush;2focusedtests0.46s. Receiverproductioncode/installedhashunchangedfrom1efc2a2.35observedaudiopacketsnotreceiverqualified. Newfixture /Users/agent-codex/zcam-freedom-stable/reference-private/native-prores-boot15/ssp;logsprores20-* inown diagnostics. No livecameraactions. CameraagentrequestskeepOBS/directSSPcloseduntilnextwindowreport.
 
+## Trial18 offline receiver evidence
+
+Camera sourcec9c959f Trial18finitecapture20/20passesactualproductionwireparser+immediateI210C4K/exactpayloadPTS/noEOFflush, no receivercodechange. Evidence /Users/agent-codex/obs-ssp-diagnostics/prores18-receiver.log. Unknownprofiletagwarning(noSSPcontainerfourcc)retained;no guessedprofile. SenderreportszeroFIFOerrors/cleandisconnect separately. Cameraagentnowrunsprofile19native+independentdecode30min with45minguard;keepOBS/directSSPclosedandno controller/newreaderactionsuntilitswindowreleased. Actualgreenscreeninputqualitystillunqualified.
+
 ## Exact pending check/blocker
 
 DesktopcontrolCUAnativepipe startupfailed; jsreset+getState retryfailedsameerror. StopthisUIpathuntiltoolstatechanges, don'tinventOBStestresult. Compiled defaultOFFOBS_SSP_PRORES_DIAGNOSTICS variant readsactualcapture andcallsproductionssp_on_meta_data/ssp_on_video_data+OBSasyncoutputprivateview;in-app9I210texturecheckNOTRUN. Diagnosticstage /Users/agent-codex/obs-ssp-prores-diagnostic-stage retained,normalstage obs-ssp-prores-release-stage. ActualliveProRes/PCM session,sustainedcadence/reconnect/shutdown notqualified. Tests herecamera9videoonly,3audioobservedbutnocapturedaudiofiles. No12bit/RAWclaim, no normalcapabilitypromotion. Nativepacketcap4MiB unchanged. PTSgaps33.366/33.367/66.733/100.100mspreserved,notsteadyrateclaim.
