@@ -50,13 +50,21 @@ static void video(const ssp_video_frame_t *packet, void *userdata)
 }
 int main(int argc, char **argv)
 {
-	assert(argc == 2);
+	if (argc != 2 && argc != 3)
+		return 2;
+	long expected = 9;
+	if (argc == 3) {
+		char *end = NULL;
+		expected = strtol(argv[2], &end, 10);
+		if (!end || *end || expected < 1 || expected > 10000)
+			return 2;
+	}
 	struct state s = {0};
 	assert(ffmpeg_decode_init(&s.decoder, AV_CODEC_ID_PRORES, false) == 0);
 	ssp_client_t client = {0};
 	client.callbacks.on_video = video;
 	client.callbacks.userdata = &s;
-	for (int i = 0; i < 9; ++i) {
+	for (int i = 0; i < expected; ++i) {
 		char name[4096];
 		snprintf(name, sizeof(name), "%s/video-%06d.payload", argv[1], i);
 		s.expected = load(name, &s.expected_size);
@@ -69,7 +77,7 @@ int main(int argc, char **argv)
 		free(wire);
 		free(s.expected);
 	}
-	assert(s.frames == 9);
+	assert(s.frames == expected);
 	assert(ssp_detect_video_codec(1006, NULL, 0) == AV_CODEC_ID_PRORES);
 	uint8_t invalid[8] = {0, 0, 0, 9, 'i', 'c', 'p', 'f'};
 	assert(ssp_detect_video_codec(1006, invalid, sizeof(invalid)) == AV_CODEC_ID_NONE);
@@ -77,6 +85,7 @@ int main(int argc, char **argv)
 	assert(!(s.decoder.decoder->thread_type & FF_THREAD_FRAME));
 	assert(s.decoder.decoder->thread_count <= 4 && s.decoder.decoder->max_pixels == 33554432);
 	ffmpeg_decode_free(&s.decoder);
-	printf("PASS9actual nativeSSP ProRes frames -> immediateI2104096x2160, exactpayload/PTS, noEOFflush\n");
+	printf("PASS%d actual nativeSSP ProRes frames -> immediateI2104096x2160, exactpayload/PTS, noEOFflush\n",
+	       s.frames);
 	return 0;
 }

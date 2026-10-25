@@ -241,6 +241,14 @@ if(SSP_BUILD_TESTS)
     if(EXISTS "${SSP_TEST_PRORES_CAPTURE}/video-000008.wire")
       add_test(NAME native-prores-capture COMMAND test-native-prores "${SSP_TEST_PRORES_CAPTURE}")
     endif()
+    set(SSP_TEST_PRORES_ADDITIONAL_CAPTURE "" CACHE PATH "Additional private native ProRes capture")
+    set(SSP_TEST_PRORES_ADDITIONAL_FRAMES 0 CACHE STRING "Expected actual frames in the additional capture")
+    if(EXISTS "${SSP_TEST_PRORES_ADDITIONAL_CAPTURE}/video-000000.wire" AND SSP_TEST_PRORES_ADDITIONAL_FRAMES GREATER 0)
+      add_test(
+        NAME native-prores-additional-capture
+        COMMAND test-native-prores "${SSP_TEST_PRORES_ADDITIONAL_CAPTURE}" "${SSP_TEST_PRORES_ADDITIONAL_FRAMES}"
+      )
+    endif()
   endif()
   add_executable(test-decoder-prores cmake/tests/test-decoder-prores.c src/ffmpeg-decode.c)
   target_include_directories(test-decoder-prores PRIVATE src)
