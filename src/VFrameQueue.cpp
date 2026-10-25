@@ -20,70 +20,166 @@ along with this program; If not, see <https://www.gnu.org/licenses/>
 #include "VFrameQueue.h"
 #include <QDebug>
 
-VFrameQueue::VFrameQueue()
+VFrameQueue::VFrameQueue() = default;
+VFrameQueue::~VFrameQueue()
 {
-	maxTime = 0;
-	running = false;
+	stop();
 }
-
+void VFrameQueue::clearPendingLocked()
+{
+	while (!frameQueue.empty()) {
+		auto frame = frameQueue.dequeue();
+		stats.residentBytes -= frame.data.len;
+		--stats.residentPackets;
+		++stats.dropped;
+		free(frame.data.data);
+	}
+	// The worker can have reserved one token before acquiring queueLock. Drain
+	// unreserved tokens so repeated overload never creates an unbounded empty loop.
+	sem.tryAcquire(sem.available());
+}
 void VFrameQueue::start()
 {
-	running = true;
-	pthread_create(&thread, nullptr, pthread_run, (void *)this);
+	QMutexLocker lifecycle(&lifecycleLock);
+	if (started)
+		return;
+	QMutexLocker lock(&queueLock);
+	clearPendingLocked();
+	stats = {};
+	pendingDiscontinuity = false;
+	running = 1;
+	int error = pthread_create(&thread, nullptr, pthread_run, this);
+	if (error) {
+		running = 0;
+		qWarning("[obs-ssp] Video queue thread creation failed: %d", error);
+		return;
+	}
+	started = true;
 }
-
 void VFrameQueue::stop()
 {
-	running = false;
+	QMutexLocker lifecycle(&lifecycleLock);
+	if (!started)
+		return;
+	{
+		QMutexLocker lock(&queueLock);
+		running = 0;
+	}
 	sem.release();
 	pthread_join(thread, nullptr);
-	QMutexLocker locker(&queueLock);
-	while (!frameQueue.empty())
-		free(frameQueue.dequeue().data.data);
+	QMutexLocker lock(&queueLock);
+	clearPendingLocked();
+	stats.waitingKeyframe = false;
+	pendingDiscontinuity = false;
+	started = false;
 }
-
-void VFrameQueue::setFrameCallback(VFrameQueue::CallbackFunc cb)
+void VFrameQueue::setFrameCallback(CallbackFunc cb)
 {
+	QMutexLocker lock(&queueLock);
 	callback = std::move(cb);
 }
-
+void VFrameQueue::setDiscontinuityCallback(std::function<void()> cb)
+{
+	QMutexLocker lock(&queueLock);
+	discontinuityCallback = std::move(cb);
+}
 void VFrameQueue::setFrameTime(uint64_t time_us)
 {
+	QMutexLocker lock(&queueLock);
 	maxTime = time_us;
 }
-
-void VFrameQueue::enqueue(imf::SspH264Data data, uint64_t time_us, bool noDrop)
+VFrameQueue::Stats VFrameQueue::getStats() const
 {
-	QMutexLocker locker(&queueLock);
-	uint8_t *copy_data = (uint8_t *)malloc(data.len);
-	memcpy(copy_data, data.data, data.len);
-	data.data = copy_data;
-	frameQueue.enqueue({data, time_us, noDrop});
-	sem.release();
+	QMutexLocker lock(&queueLock);
+	auto result = stats;
+	result.running = running.loadAcquire() != 0;
+	return result;
 }
-
+bool VFrameQueue::enqueue(imf::SspH264Data data, uint64_t time_us, bool keyframe)
+{
+	QMutexLocker lock(&queueLock);
+	if (!running.loadAcquire()) {
+		++stats.dropped;
+		return false;
+	}
+	if (!data.data || !data.len || (size_t)data.len > maxPacketBytes) {
+		clearPendingLocked();
+		stats.waitingKeyframe = true;
+		pendingDiscontinuity = true;
+		++stats.dropped;
+		return false;
+	}
+	if (stats.waitingKeyframe && !keyframe) {
+		++stats.dropped;
+		return false;
+	}
+	if (stats.residentPackets >= maxResidentPackets || (size_t)data.len > maxResidentBytes - stats.residentBytes) {
+		clearPendingLocked();
+		stats.waitingKeyframe = true;
+		pendingDiscontinuity = true;
+		if (!keyframe) {
+			++stats.dropped;
+			return false;
+		}
+	}
+	// At most one 32MiB access unit is in flight after clearing pending packets.
+	if (stats.residentPackets >= maxResidentPackets || (size_t)data.len > maxResidentBytes - stats.residentBytes) {
+		++stats.dropped;
+		return false;
+	}
+	auto copy = (uint8_t *)malloc(data.len);
+	if (!copy) {
+		clearPendingLocked();
+		stats.waitingKeyframe = true;
+		pendingDiscontinuity = true;
+		++stats.dropped;
+		return false;
+	}
+	memcpy(copy, data.data, data.len);
+	data.data = copy;
+	bool reset = stats.waitingKeyframe && keyframe && pendingDiscontinuity;
+	if (reset) {
+		stats.waitingKeyframe = false;
+		pendingDiscontinuity = false;
+	}
+	frameQueue.enqueue({data, time_us, reset});
+	stats.residentBytes += data.len;
+	++stats.residentPackets;
+	++stats.admitted;
+	sem.release();
+	return true;
+}
 void *VFrameQueue::pthread_run(void *q)
 {
 	run((VFrameQueue *)q);
 	return nullptr;
 }
-
 void VFrameQueue::run(VFrameQueue *q)
 {
-	// Encoded access units must reach the decoder in receive order. Reordered PTS
-	// are valid for B frames; dropping compressed references corrupts later frames.
-	while (q->running) {
+	while (q->running.loadAcquire()) {
 		q->sem.acquire();
-		if (!q->running)
-			break;
 		q->queueLock.lock();
+		if (!q->running.loadAcquire()) {
+			q->queueLock.unlock();
+			break;
+		}
 		if (q->frameQueue.empty()) {
 			q->queueLock.unlock();
 			continue;
 		}
 		Frame current = q->frameQueue.dequeue();
+		auto cb = q->callback;
+		auto reset = q->discontinuityCallback;
+		if (current.discontinuity)
+			++q->stats.resets;
 		q->queueLock.unlock();
-		q->callback(&current.data);
+		if (current.discontinuity && reset)
+			reset();
+		if (cb)
+			cb(&current.data);
 		free(current.data.data);
+		QMutexLocker lock(&q->queueLock);
+		q->stats.residentBytes -= current.data.len;
+		--q->stats.residentPackets;
 	}
 }

@@ -38,6 +38,7 @@ along with this program; If not, see <https://www.gnu.org/licenses/>
 
 #include "obs-ssp.h"
 #include "ssp-client-iso.h"
+#include "ssp-pipe-log-reader.h"
 
 static size_t os_process_pipe_read_retry(os_process_pipe *pipe, uint8_t *dst, size_t size)
 {
@@ -65,17 +66,31 @@ static Message *msg_recv(os_process_pipe *pipe)
 		bfree(msg);
 		return nullptr;
 	}
+	if (!ssp_ipc_header_valid(msg)) {
+		ssp_blog(LOG_WARNING, "Rejected malformed or oversized connector IPC header");
+		bfree(msg);
+		return nullptr;
+	}
 	if (msg->length == 0) {
 		return msg;
 	}
 	Message *msg_all = nullptr;
 	msg_all = (Message *)bmalloc(sizeof(Message) + msg->length);
+	if (!msg_all) {
+		bfree(msg);
+		return nullptr;
+	}
 	memcpy(msg_all, msg, sizeof(Message));
 	bfree(msg);
 	//ssp_blog(LOG_INFO, "receive msg type: %d, size: %d", msg_all->type, msg_all->length);
 	sz = os_process_pipe_read_retry(pipe, msg_all->value, msg_all->length);
 	if (sz != msg_all->length) {
 		ssp_blog(LOG_WARNING, "pipe protocol body error, recv: %zu!", sz);
+		bfree(msg_all);
+		return nullptr;
+	}
+	if (!ssp_ipc_body_valid(msg_all)) {
+		ssp_blog(LOG_WARNING, "Rejected malformed connector IPC body");
 		bfree(msg_all);
 		return nullptr;
 	}
@@ -166,10 +181,7 @@ void *SSPClientIso::ReceiveThread(void *arg)
 	auto pipe = th->pipe;
 	th->statusLock.unlock();
 
-	struct LogReader {
-		std::thread thread;
-		~LogReader() { thread.join(); }
-	} log_reader{std::thread(dump_stderr, pipe)};
+	SspPipeLogReader log_reader(pipe, std::thread(dump_stderr, pipe));
 
 	msg = msg_recv(pipe);
 	if (!msg) {
@@ -248,13 +260,7 @@ void SSPClientIso::Stop()
 
 	/* Terminate before joining: the connector may also be blocked writing IPC.
 	 * POSIX SIGTERM handlers cannot reliably interrupt stdio writes. */
-	if (this->pipe) {
-#ifdef _WIN32
-		os_process_pipe_signal(this->pipe, 0);
-#else
-		os_process_pipe_signal(this->pipe, SIGKILL);
-#endif
-	}
+	ssp_terminate_process_pipe(this->pipe);
 
 	this->statusLock.unlock();
 	if (this->worker.joinable()) {

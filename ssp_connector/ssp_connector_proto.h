@@ -31,6 +31,9 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include "include/ssp/limits.h"
 
 #ifdef _MSC_VER
 // Trailing payload arrays are part of the existing packed IPC wire format.
@@ -105,6 +108,55 @@ struct Message {
 	uint32_t length;
 	uint8_t value[0];
 };
+
+/* Validate the outer header before allocation, and every embedded size before
+ * exposing pointers to a callback. Both processes use the same packed ABI. */
+static inline bool ssp_ipc_header_valid(const struct Message *message)
+{
+	if (!message || message->length > SSP_MAX_IPC_BODY_BYTES)
+		return false;
+	switch (message->type) {
+	case MetaDataMsg:
+		return message->length == sizeof(struct Metadata);
+	case VideoDataMsg:
+		return message->length > sizeof(struct VideoData) &&
+		       message->length <= sizeof(struct VideoData) + SSP_MAX_PACKET_BYTES;
+	case AudioDataMsg:
+		return message->length > sizeof(struct AudioData) &&
+		       message->length <= sizeof(struct AudioData) + SSP_MAX_PACKET_BYTES;
+	case ExceptionMsg:
+		return message->length > sizeof(struct Message) && message->length <= 65536;
+	case RecvBufferFullMsg:
+	case DisconnectMsg:
+	case ConnectionConnectedMsg:
+	case ConnectorOkMsg:
+		return message->length == 0;
+	default:
+		return false;
+	}
+}
+static inline bool ssp_ipc_body_valid(const struct Message *message)
+{
+	if (!ssp_ipc_header_valid(message))
+		return false;
+	switch (message->type) {
+	case VideoDataMsg: {
+		const struct VideoData *video = (const struct VideoData *)message->value;
+		return video->len && video->len == message->length - sizeof(*video);
+	}
+	case AudioDataMsg: {
+		const struct AudioData *audio = (const struct AudioData *)message->value;
+		return audio->len && audio->len == message->length - sizeof(*audio);
+	}
+	case ExceptionMsg: {
+		const struct Message *error = (const struct Message *)message->value;
+		return error->length && error->length == message->length - sizeof(*error) &&
+		       memchr(error->value, '\0', error->length) != NULL;
+	}
+	default:
+		return true;
+	}
+}
 
 #pragma pack()
 

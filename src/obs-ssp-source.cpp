@@ -169,7 +169,9 @@ static void ssp_video_data_enqueue(struct imf::SspH264Data *video, ssp_connectio
 	if (!s->queue) {
 		return;
 	}
-	s->queue->enqueue(*video, video->pts, video->type == 5);
+	const bool keyframe = video->type == 5 ||
+			      ssp_detect_video_codec(0, video->data, video->len) == AV_CODEC_ID_PRORES;
+	s->queue->enqueue(*video, video->pts, keyframe);
 }
 
 static void ssp_on_video_data(struct imf::SspH264Data *video, ssp_connection *s)
@@ -231,6 +233,17 @@ static void ssp_on_video_data(struct imf::SspH264Data *video, ssp_connection *s)
 				s->frame.format, (decode_end_ns - decode_start_ns) / 1000000.0,
 				(submit_end_ns - decode_end_ns) / 1000000.0);
 	}
+}
+
+static void ssp_on_video_discontinuity(ssp_connection *s)
+{
+	if (!s->running)
+		return;
+	// Runs on the queue's decoder thread, before the recovery keyframe.
+	if (ffmpeg_decode_valid(&s->vdecoder))
+		avcodec_flush_buffers(s->vdecoder.decoder);
+	s->i_frame_shown = 0;
+	ssp_blog(LOG_WARNING, "Video queue recovered after bounded overload; decoder reset at keyframe");
 }
 
 static void ssp_on_audio_data(struct imf::SspAudioData *audio, ssp_connection *s)
@@ -404,6 +417,7 @@ static void ssp_conn_start(ssp_connection *s)
 	assert(s->queue == nullptr);
 	s->queue = new VFrameQueue;
 	s->queue->setFrameCallback(std::bind(ssp_on_video_data, _1, s));
+	s->queue->setDiscontinuityCallback(std::bind(ssp_on_video_discontinuity, s));
 
 	s->queue->start();
 	emit s->client->Start();
@@ -466,6 +480,7 @@ void *thread_ssp_reconnect(void *data)
 	assert(conn->queue == nullptr);
 	conn->queue = new VFrameQueue;
 	conn->queue->setFrameCallback(std::bind(ssp_on_video_data, _1, conn));
+	conn->queue->setDiscontinuityCallback(std::bind(ssp_on_video_discontinuity, conn));
 
 	conn->queue->start();
 	emit conn->client->Start();

@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "limits.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,7 +26,7 @@ extern "C" {
  * ═══════════════════════════════════════════════════════════════════════════ */
 
 #define SSP_DEFAULT_PORT       9999
-#define SSP_RECV_BUF_SIZE      (4 * 1024 * 1024)
+#define SSP_RECV_BUF_SIZE      SSP_MAX_PACKET_BYTES
 
 /* Stream selection */
 #define SSP_STREAM_DEFAULT     0
