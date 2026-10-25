@@ -87,6 +87,17 @@ set(
 )
 
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${obs-ssp_SOURCES} ${obs-ssp_HEADERS})
+set(SSP_TEST_PRORES_CAPTURE "" CACHE PATH "Private actual native ProRes wire/payload directory")
+option(OBS_SSP_PRORES_DIAGNOSTICS "Run recorded native ProRes through the actual OBS source decoder" OFF)
+if(OBS_SSP_PRORES_DIAGNOSTICS)
+  if(NOT EXISTS "${SSP_TEST_PRORES_CAPTURE}/video-000008.payload")
+    message(FATAL_ERROR "ProRes diagnostics require an actual recorded capture")
+  endif()
+  target_compile_definitions(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE OBS_SSP_PRORES_DIAGNOSTICS SSP_PRORES_CAPTURE_ROOT="${SSP_TEST_PRORES_CAPTURE}"
+  )
+endif()
 option(OBS_SSP_DIAGNOSTICS "Enable explicit real-OBS peer acceptance-test source" OFF)
 option(OBS_SSP_AUTORUN_DIAGNOSTICS "Run the private real-OBS peer test after startup" OFF)
 if(OBS_SSP_DIAGNOSTICS)
@@ -220,6 +231,17 @@ if(SSP_BUILD_TESTS)
   target_include_directories(test-decoder PRIVATE src)
   target_link_libraries(test-decoder PRIVATE OBS::libobs FFmpeg::avcodec FFmpeg::avutil)
   target_compile_definitions(test-decoder PRIVATE ENABLE_HEVC)
+  if(USE_NATIVE_SSP AND NOT WIN32)
+    add_executable(test-native-prores cmake/tests/test-native-prores.c src/ffmpeg-decode.c)
+    target_include_directories(test-native-prores PRIVATE src)
+    target_link_libraries(test-native-prores PRIVATE OBS::libobs FFmpeg::avcodec FFmpeg::avutil)
+    if(NOT APPLE)
+      target_link_libraries(test-native-prores PRIVATE OpenSSL::Crypto)
+    endif()
+    if(EXISTS "${SSP_TEST_PRORES_CAPTURE}/video-000008.wire")
+      add_test(NAME native-prores-capture COMMAND test-native-prores "${SSP_TEST_PRORES_CAPTURE}")
+    endif()
+  endif()
   add_executable(test-decoder-prores cmake/tests/test-decoder-prores.c src/ffmpeg-decode.c)
   target_include_directories(test-decoder-prores PRIVATE src)
   target_link_libraries(test-decoder-prores PRIVATE OBS::libobs FFmpeg::avcodec FFmpeg::avutil)
@@ -285,9 +307,13 @@ if(SSP_BUILD_TESTS)
       test-frame-queue
       test-decoder
       test-decoder-prores
+      test-native-prores
       test-decoder-video
       test-decoder-pcm
     )
+      if(NOT TARGET ${_test_target})
+        continue()
+      endif()
       set_target_properties(
         ${_test_target}
         PROPERTIES

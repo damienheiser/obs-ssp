@@ -58,6 +58,10 @@ bool obs_module_load(void)
 	ssp_source_info = create_ssp_source_info();
 	obs_register_source(&ssp_source_info);
 	register_ssp_peer();
+#ifdef OBS_SSP_PRORES_DIAGNOSTICS
+	extern void register_ssp_prores_capture_diagnostic();
+	register_ssp_prores_capture_diagnostic();
+#endif
 #ifdef OBS_SSP_DIAGNOSTICS
 	extern void register_ssp_peer_diagnostics();
 	register_ssp_peer_diagnostics();

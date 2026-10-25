@@ -109,6 +109,13 @@ static int ffmpeg_decode_init_internal(struct ffmpeg_decode *decode, enum AVCode
 	decode->decoder->pkt_timebase = (AVRational){1, 1000000};
 	decode->decoder->max_pixels = peer_bounds ? 33554432 : decode->decoder->max_pixels;
 	decode->decoder->thread_count = peer_bounds ? 4 : 0;
+	if (id == AV_CODEC_ID_PRORES) {
+		// Native ProRes is intra-only. Frame threading can retain an entire short
+		// camera burst until EOF, which live sources never flush between frames.
+		decode->decoder->max_pixels = 33554432;
+		decode->decoder->thread_count = 4;
+		decode->decoder->thread_type = FF_THREAD_SLICE;
+	}
 	decode->decoder->delay = 0;
 
 	if (use_hw)

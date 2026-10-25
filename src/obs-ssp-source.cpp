@@ -1108,3 +1108,169 @@ struct obs_source_info create_ssp_source_info()
 
 	return ssp_source_info;
 }
+
+#ifdef OBS_SSP_PRORES_DIAGNOSTICS
+#include <QCoreApplication>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QTimer>
+#include <QUuid>
+#include <QtEndian>
+namespace {
+struct ProResCaptureDiagnostic : QObject {
+	obs_source_t *source;
+	ssp_connection connection = {};
+	obs_view_t *view = nullptr;
+	QTimer timer;
+	int index = 0;
+	bool valid = true;
+	explicit ProResCaptureDiagnostic(obs_source_t *s) : source(s)
+	{
+		connection.source = s;
+		connection.running = true;
+		connection.wait_i_frame = true;
+		connection.hwaccel = true;
+		connection.sync_mode = PROP_SYNC_INTERNAL;
+		QObject::connect(&timer, &QTimer::timeout, this, [this] { tick(); });
+	}
+	~ProResCaptureDiagnostic()
+	{
+		timer.stop();
+		release_view();
+		ffmpeg_decode_free(&connection.vdecoder);
+	}
+	void release_view()
+	{
+		if (view) {
+			obs_view_remove(view);
+			obs_view_set_source(view, 0, nullptr);
+			obs_view_destroy(view);
+			view = nullptr;
+		}
+	}
+	void start()
+	{
+		QFile file(QString(SSP_PRORES_CAPTURE_ROOT) + "/metadata.json");
+		valid = file.open(QIODevice::ReadOnly);
+		auto metadata = QJsonDocument::fromJson(file.readAll()).object();
+		imf::SspVideoMeta v = {};
+		imf::SspAudioMeta a = {};
+		imf::SspMeta m = {};
+		v.encoder = metadata["VideoEncoder"].toInt();
+		v.width = metadata["Width"].toInt();
+		v.height = metadata["Height"].toInt();
+		v.timescale = metadata["VideoTimescale"].toInt();
+		v.unit = metadata["VideoUnit"].toInt();
+		v.gop = metadata["GOP"].toInt();
+		a.encoder = metadata["AudioEncoder"].toInt();
+		a.sample_rate = metadata["SampleRate"].toInt();
+		a.channel = metadata["Channels"].toInt();
+		a.sample_size = metadata["SampleSize"].toInt();
+		a.timescale = metadata["AudioTimescale"].toInt();
+		a.unit = metadata["AudioUnit"].toInt();
+		valid &= v.encoder == 1006 && v.width == 4096 && v.height == 2160;
+		ssp_on_meta_data(&v, &a, &m, &connection);
+		obs_video_info info = {};
+		valid &= obs_get_video_info(&info);
+		info.base_width = info.output_width = 320;
+		info.base_height = info.output_height = 180;
+		view = obs_view_create();
+		valid &= view != nullptr;
+		if (view) {
+			obs_view_set_source(view, 0, source);
+			valid &= obs_view_add2(view, &info) != nullptr;
+		}
+		timer.start(34);
+	}
+	void tick()
+	{
+		if (index < 9 && valid) {
+			auto base =
+				QString(SSP_PRORES_CAPTURE_ROOT) + QString("/video-%1").arg(index, 6, 10, QChar('0'));
+			QFile raw(base + ".payload"), wire(base + ".wire");
+			valid &= raw.open(QIODevice::ReadOnly) && wire.open(QIODevice::ReadOnly);
+			if (valid && raw.size() > 0 && raw.size() <= 4 * 1024 * 1024 &&
+			    wire.size() == raw.size() + 37) {
+				auto data = raw.readAll(), packet = wire.readAll();
+				imf::SspH264Data input = {};
+				input.data = (uint8_t *)data.data();
+				input.len = (int)data.size();
+				input.pts = qFromBigEndian<uint64_t>((const uchar *)packet.constData() + 1);
+				input.type = qFromBigEndian<uint32_t>((const uchar *)packet.constData() + 9);
+				ssp_on_video_data(&input, &connection);
+				++index;
+				valid &= connection.decoded_video_frames == (uint64_t)index;
+			} else
+				valid = false;
+			if (valid && index < 9)
+				return;
+		}
+		timer.stop();
+		QTimer::singleShot(200, this, [this] { finish(); });
+	}
+	void finish()
+	{
+		// Async dimensions are populated by OBS texture setup during rendering,
+		// not by the source's get_width callback (this diagnostic has none).
+		bool cached = obs_source_get_width(source) == 4096 && obs_source_get_height(source) == 2160 &&
+			      connection.frame.format == VIDEO_FORMAT_I210;
+		bool passed = valid && index == 9 && connection.decoded_video_frames == 9 && cached &&
+			      !connection.vdecoder.hw;
+		QJsonObject report{{"passed", passed},
+				   {"recorded_capture", true},
+				   {"decoded_frames", (int)connection.decoded_video_frames},
+				   {"width", (int)connection.frame.width},
+				   {"height", (int)connection.frame.height},
+				   {"pixel_format", (int)connection.frame.format},
+				   {"actual_obs_async_texture", cached},
+				   {"hardware_decoder", connection.vdecoder.hw},
+				   {"live_camera_test", false}};
+		auto path = QString("/Users/Shared/obs-ssp-native-prores-%1.json")
+				    .arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+		QFile file(path);
+		if (file.open(QIODevice::WriteOnly | QIODevice::NewOnly)) {
+			file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+			file.write(QJsonDocument(report).toJson());
+		}
+		ssp_blog(passed ? LOG_INFO : LOG_ERROR,
+			 "Native ProRes recorded-capture acceptance %s: %d/9 frames, I210 C4K, OBS async=%d; report=%s",
+			 passed ? "PASS" : "FAIL", (int)connection.decoded_video_frames, (int)cached,
+			 path.toUtf8().constData());
+		release_view();
+	}
+};
+} // namespace
+void register_ssp_prores_capture_diagnostic()
+{
+	obs_source_info info = {};
+	info.id = "ssp_prores_capture_diagnostic";
+	info.type = OBS_SOURCE_TYPE_INPUT;
+	info.output_flags = OBS_SOURCE_ASYNC_VIDEO;
+	info.get_name = [](void *) {
+		return "Recorded native ProRes acceptance (diagnostic)";
+	};
+	info.create = [](obs_data_t *, obs_source_t *source) -> void * {
+		auto test = new ProResCaptureDiagnostic(source);
+		proc_handler_add(
+			obs_source_get_proc_handler(source), "void start_capture()",
+			[](void *data, calldata_t *) { static_cast<ProResCaptureDiagnostic *>(data)->start(); }, test);
+		return test;
+	};
+	info.destroy = [](void *data) {
+		delete static_cast<ProResCaptureDiagnostic *>(data);
+	};
+	obs_register_source(&info);
+	QTimer::singleShot(8000, QCoreApplication::instance(), [] {
+		auto source = obs_source_create_private("ssp_prores_capture_diagnostic",
+							"private actual ProRes capture", nullptr);
+		if (!source)
+			return;
+		calldata_t data;
+		calldata_init(&data);
+		proc_handler_call(obs_source_get_proc_handler(source), "start_capture", &data);
+		calldata_free(&data);
+		QTimer::singleShot(5000, QCoreApplication::instance(), [source] { obs_source_release(source); });
+	});
+}
+#endif
