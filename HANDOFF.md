@@ -20,6 +20,10 @@ Newffmpeg_decode_prores_init validatesFourCC/depthbeforecodecopen(ap4h/ap4x12,42
 
 12bitTRANSPORTNOTIMPLEMENTED: native4MiBcaptoo smallforactual6.1MBpayload, native/peerdescriptornotyetwiredtonewcodecinit. Donotclaim12bitcamera/nativeSSP/alpha/real-time/colorcalibration. SourceconverterdeclaredfullBT709matrixbutffprobestream+framesreportTVrange/noothercolortags; preserveconflictandunknownprimaries/transfer. Bayerrequiresnewdistinctpacking/CFA/stride/calibration+demosaic;noOBSBayerformat. Requirementsproposal docs/media-format-descriptor.md sharedcameraagent.
 
+## CorrectedTV12bitfixture
+
+Actualprivatefull-c4k-tv.mov SHAverified; existingexplicitap4h12decoderPASSC4KI412immediate/fullresrightaligned12planes, productioncodeunchanged. Ownframe-levelffprobeyuv444p12le/TVrange/BT709matrix, unknownprimaries/transfer, consistentwithsourceagentnumericlimitedconversionreport; no calibrationclaim. Oldfixturekept. Logprores12-tv.log/privatepayloadoutsidegit. Important4MiBcapisOURCnative receiveradmission, NOTconfirmedcameraserverlimit; Go32MiB/peer16MiBseparatehostbounds. Need boundedqueue+inflight budget/lifecycle beforecapincrease/native12handoff. No cameraactions orreinstall.
+
 ## Exact pending check/blocker
 
 DesktopcontrolCUAnativepipe startupfailed; jsreset+getState retryfailedsameerror. StopthisUIpathuntiltoolstatechanges, don'tinventOBStestresult. Compiled defaultOFFOBS_SSP_PRORES_DIAGNOSTICS variant readsactualcapture andcallsproductionssp_on_meta_data/ssp_on_video_data+OBSasyncoutputprivateview;in-app9I210texturecheckNOTRUN. Diagnosticstage /Users/agent-codex/obs-ssp-prores-diagnostic-stage retained,normalstage obs-ssp-prores-release-stage. ActualliveProRes/PCM session,sustainedcadence/reconnect/shutdown notqualified. Tests herecamera9videoonly,3audioobservedbutnocapturedaudiofiles. No12bit/RAWclaim, no normalcapabilitypromotion. Nativepacketcap4MiB unchanged. PTSgaps33.366/33.367/66.733/100.100mspreserved,notsteadyrateclaim.
